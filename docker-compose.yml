@@ -1,0 +1,38 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: olist-postgres
+    environment:
+      POSTGRES_USER: olist
+      POSTGRES_PASSWORD: olist
+      POSTGRES_DB: olist
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U olist -d olist"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  jupyter:
+    build:
+      context: ./jupyter
+    container_name: olist-jupyter
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./:/workspace
+      - ./donnees/olist:/workspace/donnees/olist:ro
+    working_dir: /workspace
+    environment:
+      DATABASE_URL: postgresql+psycopg2://olist:olist@postgres:5432/olist
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
