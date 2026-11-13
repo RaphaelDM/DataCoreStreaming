@@ -1,0 +1,44 @@
+# Données
+*.csv
+data/
+datasets/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE / éditeurs
+.vscode/
+.idea/
+*.swp
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+.pytest_cache/
+
+# Node
+node_modules/
+
+# Secrets / env
+.env
+.env.*
+!.env.example
+
+# Logs / temp
+*.log
+logs/
+tmp/
+*.tmp
+
+# Docker / BDD locales
+*.db
+*.sqlite
+*.sqlite3
+pgdata/
