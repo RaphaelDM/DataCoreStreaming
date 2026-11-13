@@ -1,3 +1,5 @@
+-- SQLBook: Code
+-- Active: 1794563200116@@127.0.0.1@5432@olist
 -- Table client_geo : une position (latitude, longitude) pour chacun des 99 441
 -- customer_id du fichier olist_customers_dataset.csv (jeu Olist, Kaggle).
 -- Coordonnées inventées mais cohérentes avec la colonne customer_city : centre de
