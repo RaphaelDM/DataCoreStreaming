@@ -333,8 +333,142 @@ Conclusion pour le dashboard : le retard est **la** cause principale des avis n�
 
 ---
 
-## 6. Ce qu'il reste à faire et mes doutes
+## 6. Étape 5 : choisir les données finales
 
-- **Étape 5** : remplir le tableau « colonne gardée ? » ; écrire `sql/schema.sql` avec les schémas `bronze`, `silver`, `gold` (clés primaires et étrangères) ; charger les tables et les `rejets_<table>` ; construire le modèle en étoile (`sql/etoile.sql`) et vérifier que le CA de `fait_ventes` est identique.
-- **Mois incomplets** (fin 2016, septembre–octobre 2018) : à exclure des graphiques mensuels du dashboard.
-- **Image Jupyter** : `pytest` et `pyarrow` ont été ajoutés au `Dockerfile`. Il faut reconstruire l'image (`docker compose build jupyter`) pour qu'ils soient installés durablement.
+Trois usages : la **boutique** (catalogue, clients, commandes), le **dashboard** administrateur et le **clustering**.
+
+### 6.1 Colonnes gardées
+
+| Table source | Colonne | Gardée ? | Forme | Usage | Justification |
+|---|---|---|---|---|---|
+| customers | `customer_id` | oui | PK de `silver.clients` | Boutique, Dashboard | Lien commande ↔ client |
+| customers | `customer_unique_id` | oui | `CHAR(32)`, indexé | Clustering, Dashboard | Identifie la **personne** (un `customer_id` par commande) |
+| customers | `zip_code_prefix` | oui | texte de 5 chiffres | Boutique | Adresse ; le zéro initial est conservé |
+| customers | `city`, `state` | oui | minuscules sans accents ; 27 États | Boutique, Dashboard | Validation à l'inscription, CA par État |
+| client_geo | `latitude`, `longitude` | oui | jointes aux clients | Dashboard | Carte (0 client sans position) |
+| orders | `order_id`, `customer_id` | oui | PK / FK | tous | Clés |
+| orders | `order_status` | oui | 8 statuts autorisés (`CHECK`) | Boutique, Dashboard, Clustering | Exclure les annulées des indicateurs |
+| orders | 5 dates | oui | `TIMESTAMPTZ` en UTC | Boutique, Dashboard, Clustering | Récence, délai de livraison, retard |
+| orders | `dates_incoherentes` | créée | booléen | Dashboard | Délais ignorés pour ces 1 382 commandes |
+| order_items | `order_item_id`, `product_id`, `seller_id` | oui | PK composite avec `order_id` / FK | Boutique, Dashboard | Grain de l'étoile |
+| order_items | `price`, `freight_value` | oui | `NUMERIC(12,2)` | Boutique, Dashboard, Clustering | CA, panier, port |
+| order_items | `shipping_limit_date` | oui | UTC | gold (`date_limite_expedition`) | Gardée par fidélité |
+| order_payments | `type`, `installments`, `value`, `sequential` | oui | `CHECK` sur le type ; échéances ≥ 1 | Boutique, Clustering | Choix du paiement à la commande ; hors étoile |
+| order_reviews | `review_score` | oui | `SMALLINT` 1 à 5 | Dashboard, Clustering | Satisfaction ; avis le plus récent par commande |
+| order_reviews | `title`, `message` | oui | texte, `NULL` si vide | Dashboard (gold) | L'administrateur lit les plaintes |
+| order_reviews | dates | oui | UTC | Dashboard (gold) | `delai_reponse_jours` |
+| products | catégorie + traduction | oui | `categorie`, `categorie_en` | Boutique, Dashboard | Catalogue par catégorie |
+| products | poids, dimensions, nb photos | oui | entiers ; poids > 0 | Boutique, Dashboard | Fiche produit, `volume_cm3` |
+| products | longueurs du nom et de la description | silver et gold oui, **étoile non** | entiers | — | Aucun usage dans le dashboard ni le clustering |
+| — | `prix_median` (prix catalogue) | créée | médiane des prix vendus | Boutique | Olist n'a pas de prix catalogue |
+| sellers | id, zip, ville, État | oui | `silver.vendeurs` | Dashboard | CA par vendeur |
+| geolocation | toutes | **gardée** en silver | 720 461 lignes, sans clé | Dashboard | Sert à placer les **vendeurs** (point médian par code postal). Les clients utilisent `client_geo` |
+
+### 6.2 `sql/schema.sql` : bronze, silver, gold
+
+| Schéma | Contenu | Clés |
+|---|---|---|
+| `bronze` | 9 tables, **tout en `TEXT`**, mêmes noms de colonnes que les CSV (la faute `lenght` est gardée) | aucune |
+| `silver` | 9 tables aux types corrects + 9 tables `rejets_<table>` | PK et FK, voir ci-dessous |
+| `gold` | `commandes`, `vendeurs`, `produits`, `geo_par_code_postal` + l'étoile (`sql/etoile.sql`) | PK |
+
+Clés de silver :
+- **PK** : `commandes(order_id)`, `clients(customer_id)`, `produits(product_id)`, `vendeurs(seller_id)`, `traductions(product_category_name)`, `articles(order_id, order_item_id)`, `paiements(order_id, payment_sequential)`, `avis(review_id, order_id)` (clé composée : un même `review_id` sert plusieurs commandes).
+- **FK** : `commandes → clients`, `articles → commandes, produits, vendeurs`, `paiements → commandes`, `avis → commandes`.
+- **`geolocalisation`** : pas de PK (plusieurs points par code postal), un index sur le code postal.
+- **Règles de nettoyage reprises en `CHECK`** : prix > 0, port ≥ 0, paiement ≥ 0, échéances ≥ 1, note de 1 à 5, statut parmi 8 valeurs, poids > 0. La base refuse ce que `nettoyage.py` aurait dû rejeter.
+- **`rejets_<table>`** : colonnes de la table d'origine en `TEXT` (un rejet peut venir d'une valeur illisible) plus `raison_rejet`. Pas de clé.
+- **Gold** : tables recréées à chaque chargement à partir des Parquet (types déduits, PK ajoutée), parce qu'elles sont dérivées et que `commandes` a 68 colonnes.
+
+### 6.3 Chargement : `src/chargement.py`
+
+- `python src/chargement.py` enchaîne `schema.sql`, bronze, silver (+ rejets), gold et `etoile.sql` ; une étape seule est possible : `python src/chargement.py silver`.
+- `COPY` depuis les Parquet (un `INSERT` ligne à ligne serait trop lent pour 720 000 points de géolocalisation).
+- **Rejouable sans doublon** : `TRUNCATE` puis rechargement ; ordre silver imposé par les FK (traductions, clients, vendeurs, produits, commandes, articles, paiements, avis, géolocalisation).
+- Les entiers arrivés en `float` dans le Parquet (`44.0`) sont reconvertis avant le `COPY`.
+- `public.client_geo` n'est jamais modifiée.
+
+## 7. Le modèle en étoile du dashboard (`sql/etoile.sql`)
+
+La boutique écrit les commandes une par une ; le dashboard lit et agrège des centaines de milliers de lignes. Il lui faut une table de faits entourée de dimensions.
+
+![[Schéma en étoile 1.png]]
+
+| Table | Grain | Colonnes principales |
+|---|---|---|
+| `fait_ventes` | **un article d'une commande** (PK `order_id`, `order_item_id`) | 4 clés vers les dimensions, `prix`, `frais_port`, `statut`, `delai_livraison_jours`, `en_retard`, `note` |
+| `dim_date` | un jour (heure locale de São Paulo) | `date_key` AAAAMMJJ, année, trimestre, mois, `annee_mois`, jour de semaine, **`mois_complet`** |
+| `dim_client` | une **personne** pendant une période | `customer_unique_id`, ville, État, lat/lng, `segment`, `version_modele`, `date_debut`, `date_fin`, `est_courant` |
+| `dim_produit` | un produit | catégorie (pt et en), poids, dimensions, volume, nb photos |
+| `dim_vendeur` | un vendeur | ville, État, lat/lng (médiane du code postal) |
+
+Décisions :
+- **Grain = l'article.** Le CA de `fait_ventes` doit donc égaler `SUM(silver.articles.price)` = 13 591 643,70 R$. Le script s'arrête en erreur (`RAISE EXCEPTION`) si le CA ou le nombre de lignes diffère : c'est le signe qu'une jointure duplique ou perd des lignes.
+- **Paiements hors de l'étoile.** Un paiement est au niveau de la commande : avec le grain « article », il serait répété sur chaque article et fausserait le CA. S'il faut un jour le CA par moyen de paiement, on ajoutera une seconde table de faits `fait_paiements` (grain : commande × paiement).
+- **`dim_client` au niveau de la personne** (`customer_unique_id`) et non du `customer_id`, sinon une même personne apparaît plusieurs fois. Ses attributs viennent de sa commande la plus récente.
+- **Dimensions avant les faits** : un fait a besoin des clés de substitution des dimensions ; sans elles les FK échouent. Les nouveaux clients et produits doivent donc être ajoutés avant les nouvelles ventes (Airflow, demi-journée 3).
+- **Évolution du segment (SCD type 2).** Quand le segment d'un client change, on **ferme** l'ancienne ligne (`date_fin`, `est_courant = FALSE`) et on en ouvre une nouvelle. Le CA par segment du mois dernier reste ainsi juste ; en écrasant l'ancien segment, il changerait avec le recalcul. `segment` reste `NULL` tant que l'étape 7 n'a pas tourné. Un index unique partiel garantit une seule ligne courante par personne.
+- **Délais et retard** calculés en SQL à partir de silver, `NULL` si la commande n'est pas livrée ou si ses dates sont incohérentes (même règle que gold). À comparer avec le taux de 8,1 % de la partie 5 après chargement des vraies données.
+- **Note** : avis le plus récent de la commande.
+- **Rejouable** : `ON CONFLICT DO NOTHING` / `WHERE NOT EXISTS` ; Airflow réutilisera les mêmes `INSERT` pour les nouvelles commandes.
+- **Mois incomplets** : `dim_date.mois_complet` est `FALSE` hors de janvier 2017 à août 2018, pour les exclure facilement des graphiques mensuels.
+- **775 commandes sans article** : absentes de `fait_ventes`, sans effet sur le CA.
+
+Schéma dessiné : *à insérer ici (image « Schéma en étoile »)*.
+
+**À mesurer et noter (demi-journée 2)** : `EXPLAIN ANALYZE` du CA par mois et par État sur silver, puis sur l'étoile (les deux requêtes sont en commentaire à la fin de `etoile.sql`). Temps silver : `À REMPLIR` ; temps étoile : `À REMPLIR`.
+
+## 8. Étape 6 : les indicateurs par client
+
+Le clustering se fait à l'échelle de la **personne** : une ligne par `customer_unique_id` dans `indicateurs_clients` (96 096 lignes attendues). Passage de « une ligne par article / paiement / avis » à « une ligne par commande » puis « par personne » avec `groupby().agg()` : somme de `prix + frais_port`, `count` des commandes et des articles, `max` des échéances, moyenne des notes, `max` de la date d'achat.
+
+| Famille | Indicateur |
+|---|---|
+| Récence | `recence_jours` (jours depuis la dernière commande, par rapport à la **date la plus récente du jeu**, pas à aujourd'hui) |
+| Fréquence | `frequence` (nombre de commandes) |
+| Montant | `montant_total` (prix + port), `panier_moyen`, `articles_par_commande` |
+| Satisfaction | `note_moyenne` (`NULL` si aucun avis) |
+| Livraison | `delai_livraison_j`, `part_retard` (calculés sur les commandes livrées, dates cohérentes) |
+| Comportement | `nb_categories`, `part_carte`, `echeances_moyennes` |
+
+Points d'attention :
+- Compter les personnes avec `customer_unique_id`, jamais avec `customer_id`.
+- Les commandes `canceled` et `unavailable` sont exclues du montant et de la fréquence.
+- Une personne sans avis a une note vide : elle sera imputée à l'étape 7 (médiane), pas supprimée.
+
+## 9. Étape 7 : le clustering
+
+**Variables retenues (6)** : récence, fréquence, montant total, panier moyen, note moyenne, délai de livraison.
+
+**Transformations**
+- imputation par la **médiane** (note et délai manquants) ;
+- `log1p` sur fréquence, montant, panier et délai (queues très asymétriques) ;
+- standardisation (`StandardScaler`), indispensable car KMeans utilise des distances.
+
+**Choix de k**
+- KMeans pour k = 2 à 10 ; courbe du coude (inertie) et score de silhouette sur un **échantillon fixe** (même échantillon pour tous les k, sinon les scores ne sont pas comparables).
+- `choisir_k` prend la meilleure silhouette **entre 4 et 8** : en dessous de 4, la segmentation est trop pauvre pour le marketing.
+- k retenu : `À REMPLIR` (silhouette : `À REMPLIR`).
+
+**À discuter** : environ 97 % des clients Olist n'ont acheté qu'une fois. La fréquence discrimine donc peu et le segment « fidèles » sera petit : c'est un **résultat**, pas un bug.
+
+**Noms des segments** : `nommer_segments` propose des noms par règles sur les moyennes (fidèles, gros dépensiers, insatisfaits, endormis, nouveaux, occasionnels). Ils sont **à relire** sur les vrais profils et à renommer si besoin : l'heuristique ne remplace pas la lecture. Tableau des profils (moyenne de chaque indicateur par segment) : `À REMPLIR`.
+
+**Enregistrement**
+- `modeles/standardisation_v1.joblib`, `modeles/kmeans_v1.joblib`, `modeles/segments_v1.json` ;
+- table `segments_clients` (client, segment, version du modèle, date), qui alimente aussi `dim_client.segment` (SCD 2).
+
+**Préparation pour Airflow (demi-journée 3)**
+- `attribuer_segments(df, version)` : `predict` sans réentraîner ;
+- `calculer_indicateurs(engine, uids=[…])` : recalcule seulement les clients touchés ;
+- les fonctions `enregistrer_*` sont des **upserts** (idempotents).
+
+## 10. Ce qu'il reste à faire et mes doutes
+
+- **Lancer le chargement sur les vraies données** : `docker compose exec jupyter python src/chargement.py`, puis noter dans la partie 7 le CA de `fait_ventes` (attendu : 13 591 643,70 R$), le nombre de lignes (112 650) et le nombre de personnes dans `dim_client` (96 096).
+- **Schéma SQL à valider sur les vraies données** : les `CHECK` et les FK sont stricts. Si un `COPY` échoue, c'est qu'une règle de `nettoyage.py` laisse passer une ligne que le schéma refuse : corriger la règle, pas le schéma.
+- **Noms de colonnes de silver** : `schema.sql` suppose les noms du notebook (`geolocation_lat`, `geolocation_lng`…). `chargement.py` s'arrête avec la liste des colonnes manquantes s'il y a un écart.
+- **Étapes 6 et 7 à exécuter** : remplir `k`, la silhouette et le tableau des profils (marqués `À REMPLIR`).
+- **Mois incomplets** (fin 2016, septembre–octobre 2018) : à exclure des graphiques mensuels du dashboard (`dim_date.mois_complet`).
+- **`donnees/olist` est commité** (125 Mo) alors qu'il devrait être dans le `.gitignore`.
+- **Image Jupyter** : `pytest` et `pyarrow` ont été ajoutés au `Dockerfile`. Il faut reconstruire l'image (`docker compose build jupyter`) ; ajouter aussi `psycopg2-binary` s'il n'y est pas.
