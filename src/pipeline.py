@@ -92,7 +92,8 @@ def lire_client_geo():
 
 
 def couche_gold():
-    """Applique agregations.py aux tables silver : commandes, vendeurs, produits, geo_par_code_postal."""
+    """Applique agregations.py aux tables silver : commandes, vendeurs, produits, geo_par_code_postal,
+    indicateurs_clients (étape 6)."""
     s = {table: lire(SILVER, table) for table in CSV_OLIST}
 
     commandes = agregations.enrichir_commandes(s["commandes"])
@@ -118,12 +119,18 @@ def couche_gold():
                                                   gold["commandes"], avis, geo_cp)
     gold["produits"] = agregations.table_produits(s["produits"], s["articles"], avis)
     gold["geo_par_code_postal"] = geo_cp
+    gold["indicateurs_clients"] = agregations.indicateurs_clients(gold["commandes"])   # étape 6
 
     # Contrôle : les regroupements ne doivent rien perdre
     ca = s["articles"].price.sum()
     for table, colonne in [("commandes", "montant_produits"), ("vendeurs", "chiffre_affaires"),
                            ("produits", "chiffre_affaires")]:
         assert abs(gold[table][colonne].sum() - ca) < 0.01, f"le chiffre d'affaires de {table} ne correspond pas"
+    # indicateurs_clients : une ligne par personne qui a vraiment acheté, et le même total dépensé
+    c = gold["commandes"]
+    achats = c[~c.est_annulee & c.montant_total.notna()]
+    assert len(gold["indicateurs_clients"]) == achats.customer_unique_id.nunique()
+    assert abs(gold["indicateurs_clients"].montant_total.sum() - achats.montant_total.sum()) < 0.01
 
     for table, df in gold.items():
         ecrire(df, GOLD, table)

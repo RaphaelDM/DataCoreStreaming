@@ -271,29 +271,58 @@ def table_produits(produits, articles, avis_resume):
 # --------------------------------------------------------------------------- indicateurs clients
 
 def indicateurs_clients(commandes):
-    """Calcule les indicateurs RFM, une ligne par personne.
+    """Étape 6 : une ligne par personne (customer_unique_id), modèle RFM + indicateurs pour le clustering.
 
-    La récence est calculée par rapport à la date d'achat la plus récente du
-    jeu de données. Le montant correspond à la valeur totale des commandes
-    (`montant_total`), frais de port compris.
+    On ne compte que les **vrais achats** : commande ni annulée ni indisponible, et avec un montant
+    (775 commandes n'ont aucun article). Sinon :
+    - des clients auraient dépensé 0 R$ (676 « clients fantômes ») ;
+    - la date de référence serait une commande annulée du 17/10/2018 au lieu de la dernière
+      vraie commande (03/09/2018), et toutes les récences seraient gonflées d'environ 44 jours.
+
+    La récence est comptée à partir de la date d'achat la plus récente de ces commandes (consigne du TP).
+    Le montant est `montant_total` (produits + port), comme le chiffre d'affaires de l'étoile.
     """
-    colonnes_requises = {"customer_unique_id", "order_id", "order_purchase_timestamp", "montant_total"}
+    colonnes_requises = {"customer_unique_id", "order_id", "order_purchase_timestamp", "montant_total",
+                         "est_annulee", "customer_state", "nb_articles", "nb_categories", "note",
+                         "retard_jours", "delai_livraison_jours", "paye_en_plusieurs_fois"}
     manquantes = colonnes_requises.difference(commandes.columns)
     if manquantes:
         raise KeyError(f"colonnes manquantes pour les indicateurs clients : {sorted(manquantes)}")
 
-    resume = (commandes.groupby("customer_unique_id").agg(
+    c = commandes[~commandes.est_annulee.astype(bool) & commandes.montant_total.notna()].copy()
+    date_reference = c.order_purchase_timestamp.max()
+    # en retard : vide si pas encore livrée (sinon une commande en route compterait comme « à l'heure »)
+    c["en_retard"] = (c.retard_jours > 0).where(c.retard_jours.notna())
+    c["plusieurs_fois"] = c.paye_en_plusieurs_fois.astype(float)
+    c = c.sort_values("order_purchase_timestamp")
+
+    t = c.groupby("customer_unique_id").agg(
+        date_premiere_commande=("order_purchase_timestamp", "min"),
         date_derniere_commande=("order_purchase_timestamp", "max"),
         nb_commandes=("order_id", "nunique"),
         montant_total=("montant_total", "sum"),
-    ).reset_index())
+        nb_articles=("nb_articles", "sum"),
+        nb_categories_max=("nb_categories", "max"),
+        note_moyenne=("note", "mean"),
+        delai_livraison_moyen_jours=("delai_livraison_jours", "mean"),
+        part_en_retard=("en_retard", "mean"),
+        part_paiement_plusieurs_fois=("plusieurs_fois", "mean"),
+        etat=("customer_state", "last"),               # l'État de la dernière commande
+    ).reset_index()
 
-    date_reference = commandes.order_purchase_timestamp.max()
-    resume["recence_jours"] = (date_reference - resume.date_derniere_commande).dt.days
-    resume["panier_moyen"] = (resume.montant_total / resume.nb_commandes).round(2)
-    resume["montant_total"] = resume.montant_total.round(2)
+    # R, F, M
+    t["recence_jours"] = (date_reference - t.date_derniere_commande).dt.days
+    t["panier_moyen"] = (t.montant_total / t.nb_commandes).round(2)
+    t["montant_total"] = t.montant_total.round(2)
+    # Depuis combien de temps la personne est cliente
+    t["anciennete_jours"] = (date_reference - t.date_premiere_commande).dt.days
+    for col in ["note_moyenne", "delai_livraison_moyen_jours", "part_en_retard", "part_paiement_plusieurs_fois"]:
+        t[col] = pd.to_numeric(t[col]).round(3)
 
-    return resume[[
-        "customer_unique_id", "recence_jours", "nb_commandes",
-        "montant_total", "panier_moyen", "date_derniere_commande",
-    ]]
+    assert t.customer_unique_id.is_unique
+    assert (t.montant_total > 0).all(), "un client sans achat réel"
+    return t[["customer_unique_id",
+              "recence_jours", "nb_commandes", "montant_total", "panier_moyen",          # RFM
+              "anciennete_jours", "nb_articles", "nb_categories_max", "note_moyenne",
+              "delai_livraison_moyen_jours", "part_en_retard", "part_paiement_plusieurs_fois", "etat",
+              "date_premiere_commande", "date_derniere_commande"]]
