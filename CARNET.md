@@ -77,7 +77,7 @@ La table `client_geo` (chargée dans Postgres) se relie à `customers` par `cust
 
 ## 3. Audit de qualité
 
-Avant de nettoyer, j'ai mesuré les problèmes sans rien modifier. Tout est calculé dans la partie 2 du notebook.
+Avant de nettoyer, j'ai mesuré les problèmes sans rien modifier. Tout est calculé dans l'étape 3 du notebook.
 
 ### Bilan
 
