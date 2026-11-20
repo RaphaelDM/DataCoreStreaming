@@ -145,6 +145,15 @@ CREATE TABLE silver.commandes (
 CREATE INDEX ix_commandes_client ON silver.commandes (customer_id);
 CREATE INDEX ix_commandes_achat  ON silver.commandes (order_purchase_timestamp);
 
+-- Copie des commandes annulées (statut 'canceled') avec leur raison si elle se déduit
+-- des données. Remplie par sql/orders_cancelled.sql après le chargement de silver.
+CREATE TABLE silver.orders_cancelled (
+    LIKE silver.commandes,
+    raison_annulation  TEXT NOT NULL,
+    PRIMARY KEY (order_id),
+    FOREIGN KEY (order_id) REFERENCES silver.commandes (order_id) ON DELETE CASCADE
+);
+
 CREATE TABLE silver.articles (
     order_id             CHAR(32) NOT NULL REFERENCES silver.commandes (order_id),
     order_item_id        INTEGER  NOT NULL,

@@ -28,8 +28,7 @@ DSN = os.environ.get("DATABASE_URL", "postgresql://olist:olist@postgres:5432/oli
 ORDRE_SILVER = ["traductions", "clients", "vendeurs", "produits", "commandes",
                 "articles", "paiements", "avis", "geolocalisation"]
 CLES_GOLD = {"commandes": ["order_id"], "vendeurs": ["seller_id"], "produits": ["product_id"],
-             "geo_par_code_postal": ["geolocation_zip_code_prefix"],
-             "indicateurs_clients": ["customer_unique_id"]}   # étape 6
+             "geo_par_code_postal": ["geolocation_zip_code_prefix"]}
 
 
 def connexion():
@@ -107,6 +106,11 @@ def charger_silver(conn):
             n = copier(cur, "silver", f"rejets_{table}", df,
                        colonnes_table(cur, "silver", f"rejets_{table}"), strict=False)
             print(f"silver.rejets_{table:<13} {n:>9} lignes")
+        # copie des commandes annulées avec leur raison (lit bronze.paiements et silver)
+        appliquer_sql(cur, "orders_cancelled.sql")
+        cur.execute("SELECT raison_annulation, count(*) FROM silver.orders_cancelled GROUP BY 1 ORDER BY 2 DESC")
+        for raison, n in cur.fetchall():
+            print(f"silver.orders_cancelled  {n:>9}  {raison}")
     conn.commit()
 
 
