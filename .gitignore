@@ -42,3 +42,7 @@ tmp/
 *.sqlite
 *.sqlite3
 pgdata/
+# Couches médaillon générées par src/pipeline.py
+donnees/bronze/
+donnees/silver/
+donnees/gold/
