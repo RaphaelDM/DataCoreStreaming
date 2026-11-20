@@ -6,7 +6,9 @@ RUN pip install --no-cache-dir \
     sqlalchemy \
     psycopg2-binary \
     matplotlib \
-    seaborn
+    seaborn \
+    pytest \
+    pyarrow
 
 WORKDIR /workspace
 EXPOSE 8888

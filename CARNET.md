@@ -20,7 +20,7 @@ J'ai ajouté `depends_on` avec `condition: service_healthy` : Jupyter attend que
 ### Données
 
 - J'ai téléchargé l'archive Kaggle et je l'ai décompressée dans `donnees/olist` (9 fichiers CSV, environ 125 Mo).
-- `donnees/` est dans le `.gitignore` : les données sont trop lourdes pour GitHub (le fichier de géolocalisation fait 61 Mo à lui seul) et elles se retéléchargent facilement.
+- Les dossiers générés `donnees/bronze`, `donnees/silver` et `donnees/gold` sont dans le `.gitignore`. **Attention** : `donnees/olist` (les CSV Kaggle, environ 125 Mo) est actuellement commité dans le dépôt, alors qu'il devrait être ignoré lui aussi (le fichier de géolocalisation fait 61 Mo à lui seul, et les données se retéléchargent facilement).
 
 ### Chargement de `client_geo.sql`
 
@@ -158,45 +158,162 @@ Ces erreurs sont peu nombreuses (moins de 1,5 %), mais elles peuvent fausser les
 
 ---
 
-## 4. Nettoyage : mes décisions
+## 4. Nettoyage : architecture médaillon et règles
 
-Principe : je travaille sur des **copies** pour garder les données d'origine, et je **supprime le moins possible**, car supprimer, c'est perdre de l'information.
+### Architecture médaillon
 
-| Problème | Ce que j'ai fait | Pourquoi |
-|---|---|---|
-| Dates lues comme du texte | Lecture avec `parse_dates` | Pour pouvoir comparer les dates et calculer des durées |
-| Analyse des délais | Création de `delai_livraison_jours`, `retard_jours`, `en_retard` | Ce sont les indicateurs utiles pour l'analyse (délai médian : 10 jours ; 8 % des commandes livrées sont en retard) |
-| Dates de livraison vides | Je garde les lignes | Les commandes non livrées comptent dans le total des commandes ; elles sont simplement exclues des calculs de délai |
-| Noms de colonnes `lenght` | Renommées en `length` | Faute de frappe dans le fichier d'origine |
-| 610 produits sans catégorie | Catégorie remplacée par `"inconnue"` | Ces produits ont été vendus : les supprimer ferait perdre des ventes |
-| Catégories en portugais | Ajout de la traduction anglaise ; si absente, je garde le nom portugais | Plus lisible, et je ne perds pas les 13 produits non traduits |
-| 261 831 doublons dans geolocation | `drop_duplicates()` | Des lignes identiques n'apportent aucune information |
-| 42 points hors du Brésil | Supprimés | Ce sont des coordonnées impossibles |
-| Commentaires vides | Je ne touche à rien | Ce n'est pas une erreur |
-| Valeurs extrêmes (IQR) | Je ne touche à rien | Ce sont des produits chers ou lourds, pas des erreurs |
+Je range le traitement en trois couches. Chaque couche ne lit que la couche d'avant : on sait toujours d'où vient un chiffre du dashboard, et si une règle est fausse on la corrige et on recalcule depuis le brut.
+
+```
+ 🥉 BRONZE                     🥈 SILVER                          🥇 GOLD
+ 9 CSV bruts, tels quels  ──►  tables nettoyées             ──►  tables prêtes à l'usage
+ (donnees/olist,               + rejets_<table>                  commandes, vendeurs, produits
+  fichiers de la boutique)     (raison du rejet)                 (puis étoile, indicateurs_clients,
+                                                                  segments_clients)
+        pd.read_csv            src/nettoyage.py                  src/agregations.py
+```
+
+| Couche | Rôle | Code | PostgreSQL (étape 5) |
+|---|---|---|---|
+| bronze | garder le brut, sans rien modifier | `pd.read_csv` | schéma `bronze` |
+| silver | mêmes lignes, types corrigés, lignes invalides mises de côté avec leur raison | `src/nettoyage.py` | schéma `silver` + `rejets_<table>` |
+| gold | regroupements et colonnes calculées pour le dashboard, la boutique et le clustering | `src/agregations.py` | schéma `gold` |
+
+Airflow suivra le même chemin avec les CSV de la boutique : fichier reçu (bronze) → `nettoyage.py` (silver) → `agregations.py` (gold). Aucune règle ne sera réécrite dans les DAG.
+
+### Les dossiers sur le disque
+
+Le script `src/pipeline.py` est le **seul** code qui lit et écrit des fichiers. Il enchaîne les trois couches et range le résultat en Parquet (format qui garde les types : dates en UTC, textes, nombres ; un CSV les perdrait).
+
+```
+donnees/
+├── olist/                  CSV téléchargés sur Kaggle (lecture seule)
+├── bronze/                 9 tables, copie exacte des CSV, TOUT en texte        (62 Mo)
+├── silver/                 9 tables nettoyées (types corrigés)                   (54 Mo)
+│   └── rejets/             rejets_<table>.parquet, avec la colonne raison_rejet
+└── gold/                   commandes, vendeurs, produits, geo_par_code_postal    (24 Mo)
+```
+
+- **Bronze en texte** : on ne décide d'aucun type à l'entrée, c'est le rôle de silver. Exemple : le CSV écrit `"09790"` ; lu comme un nombre, pandas en faisait `9790`. En texte, la valeur brute est gardée telle quelle.
+- **Lancer** : `docker compose exec jupyter python src/pipeline.py` (les trois couches, environ 35 s), ou une seule couche : `... src/pipeline.py gold`.
+- **Contrôle intégré** : la couche gold s'arrête en erreur si le chiffre d'affaires de `commandes`, `vendeurs` ou `produits` diffère de celui des articles silver.
+- Les dossiers `bronze/`, `silver/` et `gold/` sont dans le `.gitignore` : ils se régénèrent avec le script.
+
+### Le module `src/nettoyage.py`
+
+- Une fonction par table : `nettoyer_commandes`, `nettoyer_clients`, `nettoyer_articles`, `nettoyer_paiements`, `nettoyer_avis`, `nettoyer_produits`, `nettoyer_vendeurs`, `nettoyer_geolocalisation`, `nettoyer_traductions`.
+- Chacune prend un DataFrame brut et renvoie `(propre, rejets)` ; `rejets` contient la colonne `raison_rejet`. Une ligne est rejetée par la **première** règle qu'elle ne respecte pas.
+- Aucune lecture ni écriture de fichier dans ces fonctions.
+- **Types** : dates converties de l'heure de São Paulo (`America/Sao_Paulo`) vers **UTC** ; montants arrondis au centime (stockés en `NUMERIC(12,2)` dans PostgreSQL : je n'utilise pas le type `Decimal` de Python dans pandas, qui rend tous les calculs très lents) ; codes postaux en texte de 5 chiffres ; villes en minuscules sans accents.
+- **Idempotence** : relancer le nettoyage sur des données propres ne change rien (vérifié sur les 9 tables réelles et par un test).
+- **Tests** : `tests/test_nettoyage.py` et `tests/test_agregations.py`, un petit DataFrame fait à la main par règle. Lancement : `docker compose exec jupyter python -m pytest` → **30 tests OK**.
+
+### Les règles, problème par problème
+
+Principe : je **supprime le moins possible**. Une commande réelle a fait circuler de l'argent : je la marque plutôt que de la supprimer. Je rejette seulement ce qui est impossible ou inutilisable.
+
+| Table | Problème (audit) | Règle | Pourquoi |
+|---|---|---|---|
+| toutes | identifiant absent ou mal formé, doublon de clé | **rejet** | Une ligne sans clé fiable ne peut pas être reliée aux autres tables |
+| orders | dates lues comme du texte, sans fuseau | conversion en **UTC** depuis `America/Sao_Paulo` | Comparer des dates de sources différentes (la boutique écrit en UTC) |
+| orders | 1 382 commandes aux dates incohérentes (transporteur avant validation, etc.) | **gardées**, marquées `dates_incoherentes` ; leurs délais sont vidés en gold | La commande et son montant sont réels ; seuls les délais sont faux |
+| orders | 2 965 dates de livraison vides | gardées | Commandes pas encore livrées ou annulées : c'est normal |
+| orders | 8 `delivered` sans date, 6 `canceled` avec date | gardées telles quelles | Trop peu nombreuses ; le statut fait foi, les délais restent vides |
+| orders | statut inconnu | **rejet** | Impossible de savoir où en est la commande |
+| orders | mois incomplets (fin 2016, sept.-oct. 2018) | gardés ; à exclure des graphiques mensuels | Les commandes sont valides, c'est la période qui est incomplète |
+| customers / sellers | code postal lu comme un nombre (`01003` → `1003`) | remis en **texte de 5 chiffres** | Sinon les codes de São Paulo (01xxx) ne correspondent plus |
+| customers / sellers | villes écrites de plusieurs façons | minuscules, sans accents | « São Paulo » et « sao paulo » sont la même ville |
+| customers / sellers | État hors des 27 États | **rejet** | Donnée fausse (aucun cas dans Olist, mais la boutique pourrait en envoyer) |
+| customers / sellers | 278 clients / 7 vendeurs avec code postal inconnu de `geolocation` | gardés | Clients placés grâce à `client_geo` ; vendeurs sans point sur la carte |
+| order_items | prix absent ou ≤ 0 | **rejet** | Un article vendu a forcément un prix |
+| order_items | 383 frais de port à 0 | gardés | Livraison gratuite (promotion), pas une erreur |
+| order_items | prix, port extrêmes (IQR) | gardés | Produits chers ou lourds, réalistes |
+| order_payments | 3 paiements `not_defined` | **rejet** | 0 R$, sur des commandes annulées : aucune information |
+| order_payments | 2 paiements « en 0 fois » | **corrigés en 1** | Un paiement se fait au moins en 1 fois ; le montant est bon |
+| order_payments | 6 bons d'achat à 0 R$ | gardés | Un bon d'achat de 0 peut exister (bon déjà consommé) |
+| order_payments | 249 écarts payé ≠ prix + port | gardés, mesurés par `ecart_paiement` | **Hypothèse vérifiée** : les 232 commandes où le client a payé plus ont 6,6 échéances en moyenne (contre 2,9) → ce sont les intérêts |
+| order_reviews | commentaires vides | gardés, texte vide → manquant | Une note sans commentaire est normale |
+| order_reviews | 814 `review_id` répétés | gardés ; clé = (`review_id`, `order_id`) | Un même avis pour un achat groupé de plusieurs commandes |
+| order_reviews | note hors de 1 à 5 | **rejet** | Note impossible |
+| products | faute `lenght` | renommée `length` | Faute de frappe |
+| products | 610 produits sans catégorie | catégorie `inconnue` (`unknown`) | Ils ont été vendus : les supprimer ferait perdre des ventes |
+| products | 13 produits sans traduction | 2 traductions ajoutées à la main (`pc_gamer`, `kitchen_portables_and_food_preparers`) | Plus aucune catégorie non traduite |
+| products | 4 poids à 0 g, 2 sans dimensions | valeur → manquante, produit gardé | Poids impossible, mais le produit existe |
+| geolocation | 279 660 lignes en double (après simplification des villes) | **rejet** | Aucune information en plus |
+| geolocation | 42 points hors du Brésil | **rejet** | Coordonnées impossibles |
+
+### Bilan bronze → silver
+
+| Table | Bronze | Silver | Rejetées |
+|---|---:|---:|---|
+| orders | 99 441 | 99 441 | 0 (1 382 marquées) |
+| customers | 99 441 | 99 441 | 0 |
+| order_items | 112 650 | 112 650 | 0 |
+| order_payments | 103 886 | 103 883 | 3 (`not_defined`) |
+| order_reviews | 99 224 | 99 224 | 0 |
+| products | 32 951 | 32 951 | 0 |
+| sellers | 3 095 | 3 095 | 0 |
+| geolocation | 1 000 163 | 720 461 | 279 702 (doublons + hors Brésil) |
+| translation | 71 | 74 | 0 (3 ajoutées) |
+
+Les données Olist sont propres sur les clés : presque aucun rejet. Les règles de rejet serviront surtout pour les fichiers de la boutique (robot avec comportements anormaux).
 
 ---
 
-## 5. Agrégations
+## 5. Gold : ce que je garde de chaque CSV pour le dashboard
 
-Pour les tables qui ont plusieurs lignes par commande, je ne supprime pas de lignes : je les **résume** avec `groupby()` + `agg()` pour obtenir une seule ligne par commande, sans perdre l'information importante.
+Pour chaque CSV, je me pose la question : **qu'est-ce que l'utilisateur final (l'administrateur, le client de la boutique) veut lire ?** Les tables qui ont plusieurs lignes par commande sont **résumées** avec `groupby()` + `agg()` dans `src/agregations.py`. Deux niveaux :
+- **par commande** → table `commandes` (une ligne par commande) ;
+- **par vendeur** et **par produit** → tables `vendeurs` et `produits` (tableaux du dashboard, catalogue de la boutique).
 
-| Table | Regroupée par | Ce que je garde | Pourquoi |
-|---|---|---|---|
-| `order_items` | commande | nombre d'articles, nombre de produits différents, nombre de vendeurs, prix total, frais de port totaux | Le panier de la commande est résumé |
-| `order_payments` | commande | montant total payé, nombre de paiements, moyen de paiement le plus utilisé (`mode`), nombre maximum d'échéances | On sait combien et comment le client a payé |
-| `order_reviews` | commande | note de l'avis **le plus récent**, nombre d'avis, a laissé un commentaire ou non | Le dernier avis reflète l'avis final du client |
-| `geolocation` | code postal | **médiane** de la latitude et de la longitude, ville et État les plus fréquents | La médiane est moins sensible aux points mal placés que la moyenne |
+Le résumé **par personne** (`customer_unique_id`, RFM) est l'étape 6.
 
-Ensuite, j'ai fusionné ces tables avec `orders` et `customers` avec `merge(how="left")` pour garder toutes les commandes. J'obtiens la table `commandes` : **une ligne par commande** (j'ai vérifié qu'il n'y a pas de doublon d'`order_id`).
+### Tableau comparatif : avant / après, CSV par CSV
+
+| CSV | Avant | Regroupé par | Colonnes ajoutées | Question de l'utilisateur |
+|---|---|---|---|---|
+| `orders` | 8 colonnes | — (1 ligne / commande) | `delai_livraison_jours`, **`delai_promis_jours`**, `retard_jours`, `en_retard`, `delai_validation_heures`, `delai_preparation_jours`, `delai_transport_jours`, `mois_achat`, `jour_semaine`, `heure_achat` (heure **locale**), **`statut`** (en français), `est_livree`, **`est_annulee`** | Combien de commandes par période ? Promet-on des délais réalistes ? Où la livraison perd-elle du temps ? |
+| `order_items` | 7 colonnes, plusieurs lignes / commande | commande | `nb_articles`, `nb_produits`, `nb_vendeurs`, `nb_categories`, `montant_produits`, `frais_port`, `montant_total`, `part_frais_port`, `prix_article_max`, `poids_total_g`, `date_limite_expedition`, `categorie_principale` | Panier moyen ? Quelles catégories se vendent ? Le port pèse-t-il trop ? |
+| `order_payments` | 5 colonnes, plusieurs lignes / commande | commande | `montant_paye`, `nb_paiements`, **`nb_moyens_paiement`**, **`nb_credit_card`, `nb_boleto`, `nb_voucher`, `nb_debit_card`**, **`montant_credit_card`, `montant_boleto`, `montant_voucher`, `montant_debit_card`**, `moyen_principal`, `nb_echeances_max`, `paye_en_plusieurs_fois` | Comment paient les clients ? Combien de R$ par moyen ? Qui combine carte + bon d'achat ? |
+| `order_reviews` | 7 colonnes, parfois plusieurs avis / commande | commande | `note` (avis le plus récent), `note_min`, `nb_avis`, `a_laisse_un_commentaire`, **`titre_avis`, `commentaire`** (texte), `date_avis`, **`delai_reponse_jours`**, `avis_negatif` | Quelle satisfaction ? **Que disent les clients mécontents ?** Olist répond-il vite ? |
+| `customers` | 5 colonnes | — (1 ligne / `customer_id`) | code postal corrigé, ville harmonisée, `latitude`, `longitude` (`client_geo`) ; dans `commandes` : `numero_commande_client`, `client_revenu` | Où sont les clients (carte) ? Nouveaux clients ou clients fidèles ? |
+| `sellers` | 4 colonnes | **vendeur** (table `vendeurs`) | `nb_commandes`, `nb_clients`, `nb_articles`, `chiffre_affaires`, `panier_moyen`, `note_moyenne`, **`part_avis_negatifs`**, `part_en_retard`, `nb_categories`, `premiere_vente`, `derniere_vente`, `lat`, `lng` | Quels vendeurs rapportent le plus ? Lesquels sont mal notés ou en retard ? |
+| `sellers` × `customers` | — | commande | **`distance_vendeur_km`**, **`vendeur_meme_etat`** | Le port et le délai dépendent-ils de la distance ? (oui : 13 R$ / 6,6 j sous 100 km, 40 R$ / 21 j au-delà de 2 000 km) |
+| `products` | 9 colonnes | **produit** (table `produits`) | catégorie traduite, `nb_ventes`, `nb_commandes`, `prix_median` (prix du catalogue), `prix_min`, `prix_max`, `chiffre_affaires`, `frais_port_moyen`, **`note_moyenne`, `nb_avis`** (étoiles du catalogue), **`volume_cm3`** | Produits les plus vendus ? Quel prix afficher ? Quelle note montrer ? |
+| `orders` × `payments` × `items` | — | commande | **`ecart_paiement`** (payé − prix − port) | Combien rapportent les intérêts du paiement en plusieurs fois ? |
+| `geolocation` | 5 colonnes, 1 M lignes | code postal | `lat`, `lng` (médiane), `ville`, `etat` (les plus fréquents) | Placer les vendeurs sur la carte |
+| `translation` | 2 colonnes | — | 3 catégories ajoutées | — |
+
+En **gras** : les informations ajoutées après relecture « utilisateur final ». Résultat : `commandes` passe de 12 colonnes (`orders` + `customers`) à **68 colonnes** pour 99 441 lignes ; `vendeurs` : 3 095 lignes, 17 colonnes ; `produits` : 32 951 lignes, 20 colonnes.
+
+### Choix à retenir
+
+- **Une colonne par moyen de paiement** (`pd.crosstab` pour le nombre, `pivot_table` pour le montant) : 2 246 commandes sont payées avec 2 moyens. Avec une seule colonne « moyen de paiement », on perdait le bon d'achat.
+- **Moyen principal = celui du plus gros montant**, pas `mode()` qui choisit au hasard en cas d'égalité.
+- **Texte des avis gardé** : avant, on ne gardait que « a commenté oui/non » ; l'administrateur a besoin de lire les plaintes.
+- **Vendeurs : regroupement en deux temps** (vendeur × commande, puis vendeur), sinon une commande de 5 articles compte 5 fois dans la note et le retard. `nb_clients` compte les `customer_unique_id` (la vraie personne).
+- **Périodes en heure locale** : les dates sont stockées en UTC, mais le mois, le jour et l'heure d'achat sont calculés à l'heure de São Paulo (une commande à 22 h n'est pas « le lendemain »).
+- **Délais vidés pour les dates incohérentes** : la commande reste dans les totaux, mais ne fausse pas les délais moyens.
+- **Position des clients** : `client_geo` (fournie, 0 client sans position) plutôt que `geolocation` (un point par code postal, 278 codes clients absents).
+
+### Vérification : bronze et gold ont les mêmes totaux
+
+| Contrôle | Bronze (CSV) | Gold |
+|---|---:|---:|
+| Total payé | 16 008 872,12 R$ | 16 008 872,12 R$ |
+| Total des produits | 13 591 643,70 R$ | 13 591 643,70 R$ |
+| Total des frais de port | 2 251 909,54 R$ | 2 251 909,54 R$ |
+| Nombre d'articles | 112 650 | 112 650 |
+| Nombre de paiements | 103 886 | 103 883 + 3 rejetés |
+| CA de la table `vendeurs` | 13 591 643,70 R$ | 13 591 643,70 R$ |
+| CA de la table `produits` | 13 591 643,70 R$ | 13 591 643,70 R$ |
+
+La somme des 4 colonnes `montant_<moyen>` redonne bien `montant_paye` pour chaque commande.
 
 ---
 
 ## 6. Ce qu'il reste à faire et mes doutes
 
-- **Commandes aux dates incohérentes (1 359)** : je ne les ai pas corrigées. Faut-il les exclure des calculs de délai ? Je pense que oui, mais je voudrais vérifier si l'écart est de quelques heures (fuseau horaire) ou de plusieurs jours.
-- **Mois incomplets** (fin 2016, septembre–octobre 2018) : à exclure pour les analyses par mois.
-- **Écarts de paiement** : je n'ai pas vérifié mon hypothèse des intérêts. Il faudrait regarder si ces commandes ont bien un nombre d'échéances élevé.
-- **Noms de villes** : pas encore harmonisés (minuscules, sans accents).
-- **Produits à 0 g et paiements à 0** : très peu nombreux, je les ai laissés pour l'instant.
-- **Prochaine étape** : charger la table `commandes` dans PostgreSQL.
+- **Étape 5** : remplir le tableau « colonne gardée ? » ; écrire `sql/schema.sql` avec les schémas `bronze`, `silver`, `gold` (clés primaires et étrangères) ; charger les tables et les `rejets_<table>` ; construire le modèle en étoile (`sql/etoile.sql`) et vérifier que le CA de `fait_ventes` est identique.
+- **Mois incomplets** (fin 2016, septembre–octobre 2018) : à exclure des graphiques mensuels du dashboard.
+- **Image Jupyter** : `pytest` et `pyarrow` ont été ajoutés au `Dockerfile`. Il faut reconstruire l'image (`docker compose build jupyter`) pour qu'ils soient installés durablement.
