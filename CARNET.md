@@ -310,6 +310,27 @@ En **gras** : les informations ajoutées après relecture « utilisateur final �
 
 La somme des 4 colonnes `montant_<moyen>` redonne bien `montant_paye` pour chaque commande.
 
+### Étape 4 au sens strict
+
+Au sens du TP, l'étape 4 est la partie **silver** (les règles de nettoyage). La partie **gold** (tables `commandes`, `vendeurs`, `produits`) est de l'avance sur l'étape 5 (« choisir les données finales ») et sur le dashboard.
+
+### Ratios de livraison
+
+Calculés à partir de la colonne vrai/faux `en_retard` : la moyenne d'une Series vrai/faux donne la part de vrai (vrai = 1, faux = 0).
+
+**Règle de calcul : toujours sur les commandes livrées** (`retard_jours` rempli : 95 103 commandes sur 99 441). Une commande pas encore livrée a `en_retard = faux` mais elle n'est pas « à l'heure » ; les commandes aux dates incohérentes sont exclues (délais vidés).
+
+| Ratio | Valeur |
+|---|---|
+| Taux de retard global | **8,1 %** (retard moyen quand en retard : 9,6 jours) |
+| Note moyenne : à l'heure / en retard | 4,29 / **2,55** |
+| Avis négatifs (note ≤ 2) : à l'heure / en retard | 9 % / **55 %** |
+| Par État (≥ 500 commandes) | MA 19,9 %, CE 15,5 %, BA 14,0 %, RJ 13,5 % … MG 5,6 %, PR 5,1 % |
+| Par mois | pics en novembre 2017 (14,2 %, Black Friday) et mars 2018 (21,3 %) ; creux en juin 2017 (3,8 %) et juin 2018 (1,4 %) |
+| Par distance client – vendeur | 6,4 % sous 100 km → 11,8 % au-delà de 1 000 km |
+
+Conclusion pour le dashboard : le retard est **la** cause principale des avis négatifs. Le taux de retard (global, par État, par vendeur) doit y figurer.
+
 ---
 
 ## 6. Ce qu'il reste à faire et mes doutes
