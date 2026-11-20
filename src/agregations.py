@@ -266,3 +266,34 @@ def table_produits(produits, articles, avis_resume):
     t["note_moyenne"] = pd.to_numeric(t.note_moyenne).round(2)
     assert t.product_id.is_unique
     return t
+
+
+# --------------------------------------------------------------------------- indicateurs clients
+
+def indicateurs_clients(commandes):
+    """Calcule les indicateurs RFM, une ligne par personne.
+
+    La récence est calculée par rapport à la date d'achat la plus récente du
+    jeu de données. Le montant correspond à la valeur totale des commandes
+    (`montant_total`), frais de port compris.
+    """
+    colonnes_requises = {"customer_unique_id", "order_id", "order_purchase_timestamp", "montant_total"}
+    manquantes = colonnes_requises.difference(commandes.columns)
+    if manquantes:
+        raise KeyError(f"colonnes manquantes pour les indicateurs clients : {sorted(manquantes)}")
+
+    resume = (commandes.groupby("customer_unique_id").agg(
+        date_derniere_commande=("order_purchase_timestamp", "max"),
+        nb_commandes=("order_id", "nunique"),
+        montant_total=("montant_total", "sum"),
+    ).reset_index())
+
+    date_reference = commandes.order_purchase_timestamp.max()
+    resume["recence_jours"] = (date_reference - resume.date_derniere_commande).dt.days
+    resume["panier_moyen"] = (resume.montant_total / resume.nb_commandes).round(2)
+    resume["montant_total"] = resume.montant_total.round(2)
+
+    return resume[[
+        "customer_unique_id", "recence_jours", "nb_commandes",
+        "montant_total", "panier_moyen", "date_derniere_commande",
+    ]]
