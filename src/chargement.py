@@ -28,7 +28,8 @@ DSN = os.environ.get("DATABASE_URL", "postgresql://olist:olist@postgres:5432/oli
 ORDRE_SILVER = ["traductions", "clients", "vendeurs", "produits", "commandes",
                 "articles", "paiements", "avis", "geolocalisation"]
 CLES_GOLD = {"commandes": ["order_id"], "vendeurs": ["seller_id"], "produits": ["product_id"],
-             "geo_par_code_postal": ["geolocation_zip_code_prefix"]}
+             "geo_par_code_postal": ["geolocation_zip_code_prefix"],
+             "indicateurs_clients": ["customer_unique_id"]}   # étape 6
 
 
 def connexion():

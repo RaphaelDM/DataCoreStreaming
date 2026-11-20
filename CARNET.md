@@ -427,21 +427,38 @@ Schéma dessiné : *à insérer ici (image « Schéma en étoile »)*.
 
 ## 8. Étape 6 : les indicateurs par client
 
-Le clustering se fait à l'échelle de la **personne** : une ligne par `customer_unique_id` dans `indicateurs_clients` (96 096 lignes attendues). Passage de « une ligne par article / paiement / avis » à « une ligne par commande » puis « par personne » avec `groupby().agg()` : somme de `prix + frais_port`, `count` des commandes et des articles, `max` des échéances, moyenne des notes, `max` de la date d'achat.
+Table `indicateurs_clients` : **une ligne par personne** (`customer_unique_id`), calculée en Python par `agregations.indicateurs_clients` à partir de la table gold `commandes`, écrite par le pipeline dans `donnees/gold/indicateurs_clients.parquet`.
 
-| Famille | Indicateur |
+Ce n'est **ni un fait ni une dimension** de l'étoile : c'est une table pour l'apprentissage (étape 7). Elle se relie à l'étoile par `customer_unique_id`, la maille de `dim_client` (partie 7). `src/chargement.py` la charge dans `gold.indicateurs_clients` (clé primaire `customer_unique_id`).
+
+### Décisions
+
+| Question | Décision | Pourquoi |
+|---|---|---|
+| Quelles commandes ? | seulement les **vrais achats** : ni annulée ni indisponible, avec un montant | sinon 676 personnes « dépensent » 0 R$ et les commandes vides gonflent `nb_commandes` |
+| Date de référence de la récence | la dernière **vraie** commande : 03/09/2018 | les 6 dernières commandes du jeu sont annulées ; prendre le 17/10/2018 gonflerait toutes les récences d'environ 44 jours |
+| Quel montant ? | `montant_total` (produits + port) | même base que le chiffre d'affaires de l'étoile ; `montant_paye` contient en plus les intérêts |
+| Retard | part calculée sur les commandes **livrées** | une commande en route n'est pas « à l'heure » (même règle que les ratios de livraison) |
+| État | celui de la dernière commande | une personne peut avoir déménagé |
+
+1 113 personnes disparaissent (elles n'ont jamais rien acheté pour de vrai) : 96 096 → **94 983**.
+
+### Colonnes
+
+| Famille | Colonnes |
 |---|---|
-| Récence | `recence_jours` (jours depuis la dernière commande, par rapport à la **date la plus récente du jeu**, pas à aujourd'hui) |
-| Fréquence | `frequence` (nombre de commandes) |
-| Montant | `montant_total` (prix + port), `panier_moyen`, `articles_par_commande` |
-| Satisfaction | `note_moyenne` (`NULL` si aucun avis) |
-| Livraison | `delai_livraison_j`, `part_retard` (calculés sur les commandes livrées, dates cohérentes) |
-| Comportement | `nb_categories`, `part_carte`, `echeances_moyennes` |
+| **R**écence | `recence_jours` |
+| **F**réquence | `nb_commandes` |
+| **M**ontant | `montant_total`, `panier_moyen` |
+| Candidats pour l'étape 7 | `anciennete_jours`, `nb_articles`, `nb_categories_max`, `note_moyenne`, `delai_livraison_moyen_jours`, `part_en_retard`, `part_paiement_plusieurs_fois`, `etat` |
 
-Points d'attention :
-- Compter les personnes avec `customer_unique_id`, jamais avec `customer_id`.
-- Les commandes `canceled` et `unavailable` sont exclues du montant et de la fréquence.
-- Une personne sans avis a une note vide : elle sera imputée à l'étape 7 (médiane), pas supprimée.
+Contrôles (dans le pipeline et les tests) : une ligne par personne, et le total dépensé égal à celui des vrais achats (15 735 527,03 R$).
+
+### Ce que ça annonce pour le clustering
+
+- **97 % des personnes n'ont commandé qu'une fois** (92 096 sur 94 983) : la fréquence ne départage presque personne. Le RFM seul donnera des segments pauvres, d'où les indicateurs en plus (même constat dans la partie 9).
+- `montant_total` et `panier_moyen` sont très asymétriques (médiane 106 R$, maximum 13 664 R$) → logarithme avant de standardiser.
+- `part_en_retard` et `delai_livraison_moyen_jours` sont vides pour les personnes dont rien n'est livré, `note_moyenne` pour 684 (aucun avis) → imputation par la médiane à l'étape 7 (partie 9).
 
 ## 9. Étape 7 : le clustering
 
@@ -472,10 +489,10 @@ Points d'attention :
 
 ## 10. Ce qu'il reste à faire et mes doutes
 
-- **Lancer le chargement sur les vraies données** : `docker compose exec jupyter python src/chargement.py`, puis noter dans la partie 7 le CA de `fait_ventes` (attendu : 13 591 643,70 R$), le nombre de lignes (112 650) et le nombre de personnes dans `dim_client` (96 096).
+- **Lancer le chargement sur les vraies données** : `docker compose exec jupyter python src/chargement.py`, puis noter dans la partie 7 le CA de `fait_ventes` (attendu : 13 591 643,70 R$), le nombre de lignes (112 650) et le nombre de personnes dans `dim_client` (96 096) ; `gold.indicateurs_clients` doit avoir 94 983 lignes (personnes avec au moins un vrai achat).
 - **Schéma SQL à valider sur les vraies données** : les `CHECK` et les FK sont stricts. Si un `COPY` échoue, c'est qu'une règle de `nettoyage.py` laisse passer une ligne que le schéma refuse : corriger la règle, pas le schéma.
 - **Noms de colonnes de silver** : `schema.sql` suppose les noms du notebook (`geolocation_lat`, `geolocation_lng`…). `chargement.py` s'arrête avec la liste des colonnes manquantes s'il y a un écart.
-- **Étapes 6 et 7 à exécuter** : remplir `k`, la silhouette et le tableau des profils (marqués `À REMPLIR`).
+- **Étape 7 à exécuter** sur `gold.indicateurs_clients` : remplir `k`, la silhouette et le tableau des profils (marqués `À REMPLIR`).
 - **Mois incomplets** (fin 2016, septembre–octobre 2018) : à exclure des graphiques mensuels du dashboard (`dim_date.mois_complet`).
 - **`donnees/olist` est commité** (125 Mo) alors qu'il devrait être dans le `.gitignore`.
 - **Image Jupyter** : `pytest` et `pyarrow` ont été ajoutés au `Dockerfile`. Il faut reconstruire l'image (`docker compose build jupyter`) ; ajouter aussi `psycopg2-binary` s'il n'y est pas.
