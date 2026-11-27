@@ -575,3 +575,27 @@ Aucune synchronisation à écrire : c'est la présence de la commande dans silve
 - `src/robot_clients.py` (lancer depuis jupyter avec `--base-url http://boutique:8000`) s'inscrit, se déconnecte, se reconnecte et commande par HTTP ; il récupère les distributions de villes, catégories et paiements depuis les tables nettoyées. Les anomalies incluent ville inconnue, quantité rejetée et panier abandonné.
 - Le dashboard lit `gold.commandes`. `src/chargement.py` met à jour `gold.etat_donnees.updated_at` à la fin du chargement gold ; c'est l'heure affichée par l'administrateur.
 - Premier lancement (3 clients, 10 commandes/min, 1 min, 20 % d'anomalies) : **8 commandes, 1 quantité rejetée, 1 panier abandonné**, 8 CSV dans `donnees/entrantes/`. Il a d'abord révélé deux bugs, corrigés : les e-mails en `@example.test` refusés par la validation (domaine réservé), et un `import os` manquant qui faisait échouer toute commande au moment de publier le CSV.
+
+## 12. Airflow (demi-journée 3)
+
+### Étape 1 : Airflow dans le docker-compose
+
+- **Service `airflow`** : image construite depuis `apache/airflow:3.1.3` (`airflow/Dockerfile`) avec pandas, pyarrow, scikit-learn et joblib. Commande `standalone` (serveur web, scheduler, dag-processor et triggerer dans un seul conteneur). Interface : http://localhost:8081, sans écran de connexion (`simple_auth_manager_all_admins`, acceptable en formation uniquement).
+- **Métadonnées** dans une base `airflow` de notre PostgreSQL (pas SQLite, qui n'accepte qu'une écriture à la fois), avec le `LocalExecutor` (plusieurs tâches en parallèle). La base est créée par un petit service `airflow-init-db` qui tourne une fois et s'arrête : les scripts d'initialisation de l'image postgres ne tournent qu'au tout premier démarrage, alors que notre base existe déjà.
+- **Montages** : `dags/`, `src/` (dans le `PYTHONPATH`, pour importer `nettoyage`, `clustering`… : les règles ne sont pas recopiées dans les DAG), `sql/`, `modeles/`, et `donnees/` en lecture et écriture (Airflow déplacera les CSV traités).
+- **Connexion `olist_postgres`** déclarée par la variable d'environnement `AIRFLOW_CONN_OLIST_POSTGRES` : pas de mot de passe à saisir dans l'interface, la configuration est dans le dépôt.
+
+**Vocabulaire**
+| Mot | Sens |
+|---|---|
+| DAG | un traitement complet : des tâches et l'ordre dans lequel elles s'enchaînent (sans boucle) |
+| tâche | une étape du DAG (ici, une fonction Python décorée par `@task`) |
+| dépendance | « B attend A » ; des tâches sans dépendance entre elles tournent en parallèle |
+| planification (`schedule`) | quand le DAG se lance : à la main, toutes les 2 minutes, ou quand un asset est mis à jour |
+| exécution (DAG run) | un lancement du DAG, avec l'état de chacune de ses tâches |
+| connexion | les informations pour joindre un système externe (ici notre PostgreSQL) |
+| variable | un réglage modifiable sans toucher au code (ex. un seuil d'alerte) |
+| asset | une donnée produite par un DAG, qui peut en déclencher un autre |
+| tâches dynamiques (`expand`) | une même tâche lancée autant de fois qu'il y a d'éléments (ex. une par fichier) |
+
+**Vérification** : le DAG `dags/olist_verification.py` (lancement manuel) contrôle en parallèle la connexion à la base (99 441 commandes, 94 983 segments), l'import de notre code et le chargement du modèle (k = 4) et l'accès à `donnees/entrantes/`, puis écrit un compte rendu. Les 4 tâches passent au vert.

@@ -55,5 +55,52 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Crée la base « airflow » (métadonnées d'Airflow) dans notre PostgreSQL si elle
+  # n'existe pas encore, puis s'arrête. Les scripts d'initialisation de l'image
+  # postgres ne tournent qu'au tout premier démarrage : ils ne suffisent pas pour
+  # une base déjà créée.
+  airflow-init-db:
+    image: postgres:16
+    environment:
+      PGPASSWORD: olist
+    command:
+      - sh
+      - -c
+      - psql -h postgres -U olist -d olist -tc "SELECT 1 FROM pg_database WHERE datname = 'airflow'" | grep -q 1 || psql -h postgres -U olist -d olist -c "CREATE DATABASE airflow"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  airflow:
+    build:
+      context: ./airflow
+    command: standalone
+    ports:
+      - "8081:8080"            # interface web : http://localhost:8081
+    environment:
+      # métadonnées d'Airflow dans la base « airflow » de notre PostgreSQL (pas SQLite)
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://olist:olist@postgres:5432/airflow
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      # pas d'écran de connexion : acceptable en formation, jamais en production
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "True"
+      # la connexion « olist_postgres » vers nos données
+      AIRFLOW_CONN_OLIST_POSTGRES: postgresql://olist:olist@postgres:5432/olist
+      # pour que les DAG puissent faire « import nettoyage », « import clustering »…
+      PYTHONPATH: /opt/airflow/src
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./src:/opt/airflow/src
+      - ./sql:/opt/airflow/sql:ro
+      - ./modeles:/opt/airflow/modeles
+      - ./donnees:/opt/airflow/donnees     # lecture et écriture : Airflow déplace les CSV traités
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init-db:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
 volumes:
   pgdata:
