@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Clients — Olist{% endblock %}
+{% block content %}
+<p class="eyebrow">ESPACE ADMINISTRATEUR</p>
+<div class="section-heading"><div><h1>Clients inscrits</h1><p class="muted">Segments issus de gold.dim_client, lorsqu'ils sont disponibles.</p></div><a class="button button-light" href="/admin/dashboard">Dashboard</a></div>
+{% if clients %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Nom</th><th>E-mail</th><th>Ville</th><th>État</th><th>Segment</th></tr></thead>
+    <tbody>{% for client in clients %}
+      <tr><td>{{ client.full_name }}</td><td>{{ client.email }}</td><td>{{ client.city|title }}</td><td>{{ client.state }}</td><td>{{ client.segment or "En attente" }}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+{% else %}<p class="empty-state">Aucun compte client enregistré.</p>{% endif %}
+{% endblock %}

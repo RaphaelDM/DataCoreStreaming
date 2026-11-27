@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Créer un compte — Olist{% endblock %}
+{% block content %}
+<section class="form-layout">
+  <div class="form-intro">
+    <p class="eyebrow">BIENVENUE CHEZ OLIST</p>
+    <h1>Votre compte, votre espace.</h1>
+    <p>Créez un compte pour enregistrer votre panier et suivre vos commandes.</p>
+  </div>
+  <form class="form-card" action="/inscription" method="post">
+    <h2>Créer un compte client</h2>
+    {% if error %}<p class="alert" role="alert">{{ error }}</p>{% endif %}
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <label for="full_name">Nom complet</label>
+    <input id="full_name" name="full_name" autocomplete="name" minlength="2" maxlength="100" required>
+    <label for="email">Adresse e-mail</label>
+    <input id="email" name="email" type="email" autocomplete="email" maxlength="254" required>
+    <label for="password">Mot de passe <span class="muted">(12 caractères minimum)</span></label>
+    <input id="password" name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required>
+    <label for="city">Ville (données Olist)</label>
+    <input id="city" name="city" autocomplete="address-level2" minlength="2" maxlength="100" placeholder="São Paulo" required>
+    <div class="field-row">
+      <div><label for="state">État</label><input id="state" name="state" minlength="2" maxlength="2" placeholder="SP" required></div>
+      <div><label for="postal_code">Code postal</label><input id="postal_code" name="postal_code" inputmode="numeric" pattern="[0-9]{5}" minlength="5" maxlength="5" placeholder="01001" required></div>
+    </div>
+    <button class="button button-dark button-wide" type="submit">Créer mon compte</button>
+    <p class="form-note">Déjà inscrit·e ? <a href="/connexion">Se connecter</a></p>
+  </form>
+</section>
+{% endblock %}

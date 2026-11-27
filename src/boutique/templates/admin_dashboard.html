@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Olist{% endblock %}
+{% block content %}
+<p class="eyebrow">ESPACE ADMINISTRATEUR</p>
+<div class="section-heading">
+  <div><h1>Vue d’ensemble</h1><p class="muted">20 dernières commandes issues des tables d’analyse gold.</p></div>
+  <a class="button button-light" href="/admin/clients">Voir les clients</a>
+</div>
+<div class="metric-strip">
+  <div class="metric-card"><span class="eyebrow">DERNIÈRE MISE À JOUR</span>
+    <strong>{% if updated_at %}{{ updated_at.strftime("%d/%m/%Y %H:%M UTC") }}{% else %}Aucune donnée{% endif %}</strong>
+  </div>
+  <div class="metric-card"><span class="eyebrow">COMMANDES AFFICHÉES</span><strong>{{ orders|length }}</strong></div>
+</div>
+<section class="account-section">
+  <h2>Commandes récentes</h2>
+  {% if orders %}
+    <div class="table-wrap"><table>
+      <thead><tr><th>Commande</th><th>Client</th><th>Date d'achat</th><th>Statut</th><th>Montant</th></tr></thead>
+      <tbody>{% for order in orders %}
+        <tr><td class="mono">{{ order.order_id }}</td><td class="mono">{{ order.customer_unique_id }}</td>
+          <td>{{ order.order_purchase_timestamp.strftime("%d/%m/%Y %H:%M UTC") }}</td>
+          <td><span class="status">{{ order.order_status }}</span></td><td>{{ order.montant_total|money }}</td></tr>
+      {% endfor %}</tbody>
+    </table></div>
+  {% else %}<p class="empty-state">Aucune commande n’est disponible dans les tables gold.</p>{% endif %}
+</section>
+{% endblock %}

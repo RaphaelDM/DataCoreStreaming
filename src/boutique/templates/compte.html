@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Mon compte — Olist{% endblock %}
+{% block content %}
+<p class="eyebrow">ESPACE CLIENT</p>
+<h1>Bonjour {{ account.full_name }}.</h1>
+<p class="muted">{{ account.email }} · {{ account.city|title }}, {{ account.state }}</p>
+<section class="account-section">
+  <div class="section-heading"><div><p class="eyebrow">VOTRE ACTIVITÉ</p><h2>Historique des commandes</h2></div></div>
+  {% if orders %}
+    <div class="table-wrap"><table>
+      <thead><tr><th>Commande</th><th>Date</th><th>Statut</th><th>Total</th></tr></thead>
+      <tbody>{% for order in orders %}
+        <tr><td class="mono">{{ order.order_id }}</td><td>{{ order.created_at.strftime("%d/%m/%Y %H:%M UTC") }}</td>
+          <td><span class="status">{{ order.status|replace("_", " ") }}</span></td><td>{{ order.total|money }}</td></tr>
+      {% endfor %}</tbody>
+    </table></div>
+  {% else %}
+    <p class="empty-state">Vos commandes apparaîtront ici après validation.</p>
+  {% endif %}
+  {% if segment and segment.segment %}
+    <p class="segment-note">Segment client : <strong>{{ segment.segment }}</strong></p>
+  {% else %}
+    <p class="segment-note">Votre segment apparaîtra après le prochain calcul des indicateurs clients.</p>
+  {% endif %}
+</section>
+{% endblock %}

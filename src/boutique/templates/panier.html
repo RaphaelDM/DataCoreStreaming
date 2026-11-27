@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Mon panier — Olist{% endblock %}
+{% block content %}
+<p class="eyebrow">VOTRE SÉLECTION</p>
+<h1>Mon panier</h1>
+{% if lines %}
+  <div class="cart-layout">
+    <div class="cart-lines">
+      {% for item in lines %}
+        <article class="cart-line">
+          <div class="cart-product">
+            <span class="mini-mark">{{ item.category[:1]|upper }}</span>
+            <div><h2>{{ item.category|replace("_", " ") }}</h2><span class="product-id">Réf. {{ item.product_id[:8] }}</span></div>
+          </div>
+          <div class="cart-actions">
+            <form action="/panier/modifier" method="post" class="inline-form">
+              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <input type="hidden" name="product_id" value="{{ item.product_id }}">
+              <label class="sr-only" for="qty-{{ loop.index }}">Quantité</label>
+              <input id="qty-{{ loop.index }}" name="quantity" type="number" min="1" max="10" value="{{ item.quantity }}" required>
+              <button class="button button-light" type="submit">Mettre à jour</button>
+            </form>
+            <form action="/panier/retirer" method="post">
+              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <input type="hidden" name="product_id" value="{{ item.product_id }}">
+              <button class="text-button" type="submit">Retirer</button>
+            </form>
+          </div>
+          <strong>{{ item.line_total|money }}</strong>
+        </article>
+      {% endfor %}
+    </div>
+    <aside class="summary-card">
+      <p class="eyebrow">RÉCAPITULATIF</p>
+      <h2>Total estimé</h2>
+      <p class="detail-price">{{ total|money }}</p>
+      <p class="muted">Prix et frais de port moyens observés dans les données Olist.</p>
+      <form action="/commande" method="post" class="checkout-form">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <label for="payment_type">Moyen de paiement</label>
+        <select id="payment_type" name="payment_type">
+          <option value="credit_card">Carte bancaire</option>
+          <option value="boleto">Boleto</option>
+          <option value="voucher">Bon d'achat</option>
+        </select>
+        <label for="installments">Échéances (carte uniquement)</label>
+        <select id="installments" name="installments">
+          {% for n in range(1, 11) %}<option value="{{ n }}">{{ n }}</option>{% endfor %}
+        </select>
+        <button class="button button-dark button-wide" type="submit">Valider la commande</button>
+      </form>
+    </aside>
+  </div>
+{% else %}
+  <div class="empty-state"><p>Votre panier est vide pour le moment.</p><a class="button button-dark" href="/catalogue">Explorer le catalogue</a></div>
+{% endif %}
+{% endblock %}

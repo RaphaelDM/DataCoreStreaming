@@ -140,6 +140,17 @@ def charger_gold(conn):
             n = copier(cur, "gold", table, df, cols)
             cur.execute(f"ALTER TABLE gold.{table} ADD PRIMARY KEY ({', '.join(cle)})")
             print(f"gold.{table:<22} {n:>9} lignes")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS gold.etat_donnees (
+                source TEXT PRIMARY KEY,
+                updated_at TIMESTAMPTZ NOT NULL
+            )
+        """)
+        cur.execute("""
+            INSERT INTO gold.etat_donnees (source, updated_at)
+            VALUES ('gold', now())
+            ON CONFLICT (source) DO UPDATE SET updated_at = EXCLUDED.updated_at
+        """)
     conn.commit()
 
 

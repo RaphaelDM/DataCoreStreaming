@@ -1,0 +1,13 @@
+.git
+.pytest_cache
+__pycache__
+*.py[cod]
+.env
+.env.*
+!.env.example
+donnees
+notebooks
+tests
+docs
+modeles
+pgdata

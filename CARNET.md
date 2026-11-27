@@ -496,3 +496,25 @@ Contrôles (dans le pipeline et les tests) : une ligne par personne, et le total
 - **Mois incomplets** (fin 2016, septembre–octobre 2018) : à exclure des graphiques mensuels du dashboard (`dim_date.mois_complet`).
 - **`donnees/olist` est commité** (125 Mo) alors qu'il devrait être dans le `.gitignore`.
 - **Image Jupyter** : `pytest` et `pyarrow` ont été ajoutés au `Dockerfile`. Il faut reconstruire l'image (`docker compose build jupyter`) ; ajouter aussi `psycopg2-binary` s'il n'y est pas.
+
+## 11. Boutique en ligne (jours 2 à 5)
+
+### Pages et comptes
+
+- Visiteur : catalogue paginé par catégorie, recherche, fiche produit, inscription et connexion.
+- Client connecté : panier en session (quantités modifiables et articles supprimables), choix du paiement, commande, historique et déconnexion.
+- Administrateur : connexion dédiée, tableau des 20 dernières commandes et liste des clients avec leur segment.
+- Le prix catalogue est `gold.produits.prix_median` ; les frais affichés sont `frais_port_moyen`. Les produits sans vente ne sont pas commandables. Les images sont des visuels factices.
+
+### Choix techniques et sécurité
+
+- FastAPI + gabarits Jinja ; comptes enregistrés dans `boutique.accounts`, historique temporaire dans `boutique.orders`.
+- Mots de passe Argon2, cookie signé HttpOnly/SameSite=Lax (`SESSION_HTTPS_ONLY=true` derrière HTTPS), jeton CSRF sur les formulaires modifiant des données, rôles client/admin vérifiés côté serveur, validation Pydantic, villes et États vérifiés.
+- Requêtes PostgreSQL paramétrées. Le secret de session et les identifiants initiaux de l'administrateur viennent de `.env`.
+- Une commande écrit un CSV plat (une ligne par article) dans `donnees/entrantes/`, d'abord temporaire puis renommé atomiquement après création de la ligne d'historique ; en cas d'échec transactionnel, le fichier final est supprimé. Les champs et règles de déduplication du paiement sont décrits dans `docs/format_csv_commande.md`.
+
+### Tests et trafic
+
+- `pytest tests/test_boutique_securite.py` couvre le hachage, la validation d'inscription, la protection CSRF, la séparation admin/client et le CSV.
+- `src/robot_clients.py` s'inscrit, se déconnecte, se reconnecte et commande par HTTP ; il récupère les distributions de villes, catégories et paiements depuis les tables nettoyées. Les anomalies incluent ville inconnue, quantité rejetée et panier abandonné.
+- Le dashboard lit `gold.commandes`. `src/chargement.py` met à jour `gold.etat_donnees.updated_at` à la fin du chargement gold ; c'est l'heure affichée par l'administrateur.

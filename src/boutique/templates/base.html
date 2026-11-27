@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Olist — la boutique{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/style.css') }}">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="/catalogue">olist<span>.</span></a>
+    <nav aria-label="Navigation principale">
+      <a href="/catalogue">Catalogue</a>
+      {% if request.session.get("account_id") %}
+        {% if request.session.get("account_role") == "admin" %}
+          <a href="/admin/dashboard">Dashboard</a>
+          <a href="/admin/clients">Clients</a>
+        {% else %}
+          <a href="/panier">Panier</a>
+          <a href="/compte">Mon compte</a>
+        {% endif %}
+        <form action="/deconnexion" method="post" class="inline-form">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <button class="nav-button" type="submit">Déconnexion</button>
+        </form>
+      {% else %}
+        <a href="/connexion">Connexion</a>
+        <a class="nav-cta" href="/inscription">Créer un compte</a>
+      {% endif %}
+    </nav>
+  </header>
+  <main class="page-shell">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="site-footer">
+    <span>Olist · une sélection construite à partir des données du projet</span>
+    <a href="/admin/connexion">Espace administrateur</a>
+  </footer>
+</body>
+</html>

@@ -35,5 +35,25 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  boutique:
+    build:
+      context: .
+      dockerfile: boutique/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://olist:olist@postgres:5432/olist
+      SESSION_SECRET: ${SESSION_SECRET:?Definir SESSION_SECRET dans .env}
+      SESSION_HTTPS_ONLY: ${SESSION_HTTPS_ONLY:-false}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?Definir ADMIN_EMAIL dans .env}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Definir ADMIN_PASSWORD dans .env}
+      DONNEES_ENTRANTES: /workspace/donnees/entrantes
+    volumes:
+      - ./donnees:/workspace/donnees
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   pgdata:
