@@ -11,7 +11,7 @@
       <thead><tr><th>Commande</th><th>Date</th><th>Statut</th><th>Total</th></tr></thead>
       <tbody>{% for order in orders %}
         <tr><td class="mono">{{ order.order_id }}</td><td>{{ order.created_at.strftime("%d/%m/%Y %H:%M UTC") }}</td>
-          <td><span class="status">{{ order.status|replace("_", " ") }}</span></td><td>{{ order.total|money }}</td></tr>
+          <td><span class="status">{{ order.status|statut }}</span></td><td>{{ order.total|money }}</td></tr>
       {% endfor %}</tbody>
     </table></div>
   {% else %}

@@ -423,7 +423,14 @@ Décisions :
 
 Schéma dessiné : *à insérer ici (image « Schéma en étoile »)*.
 
-**À mesurer et noter (demi-journée 2)** : `EXPLAIN ANALYZE` du CA par mois et par État sur silver, puis sur l'étoile (les deux requêtes sont en commentaire à la fin de `etoile.sql`). Temps silver : `À REMPLIR` ; temps étoile : `À REMPLIR`.
+**Mesure (demi-journée 2) : CA par mois et par État**, avec `EXPLAIN ANALYZE` (les deux requêtes sont à la fin de `etoile.sql`), 6 exécutions de chaque, cache chaud :
+
+| Requête sur | Min | Médiane | Max |
+|---|---|---|---|
+| tables nettoyées (`silver.articles` ⋈ `commandes` ⋈ `clients`) | 295 ms | **≈ 420 ms** | 483 ms |
+| modèle en étoile (`fait_ventes` ⋈ `dim_date` ⋈ `dim_client`) | 115 ms | **≈ 140 ms** | 236 ms |
+
+L'étoile est **environ 3 fois plus rapide** : la date est déjà découpée (`dim_date.annee_mois`, pas de `to_char` avec fuseau horaire sur chaque ligne), l'État est directement dans `dim_client`, et les jointures se font sur des clés entières indexées plutôt que sur des identifiants texte de 32 caractères. Les deux donnent le même CA (13 591 643,70 R$). Les deux restent sous la seconde : à ce volume, pas besoin de table d'agrégats précalculés.
 
 ## 8. Étape 6 : les indicateurs par client
 
@@ -544,8 +551,27 @@ Les noms sont proposés par `nommer_segments` (trait le plus éloigné de la moy
 - Requêtes PostgreSQL paramétrées. Le secret de session et les identifiants initiaux de l'administrateur viennent de `.env`.
 - Une commande écrit un CSV plat (une ligne par article) dans `donnees/entrantes/`, d'abord temporaire puis renommé atomiquement après création de la ligne d'historique ; en cas d'échec transactionnel, le fichier final est supprimé. Les champs et règles de déduplication du paiement sont décrits dans `docs/format_csv_commande.md`.
 
+### Dashboard administrateur : à quoi sert chaque élément
+
+| Élément | Question métier | Décision qu'il aide à prendre |
+|---|---|---|
+| **20 dernières commandes** (statut, montant) | Le site vend-il en ce moment ? Les commandes avancent-elles normalement ? | Repérer une panne (plus aucune commande), une rafale d'annulations ou une commande bloquée, et réagir (support, vendeur, transporteur) |
+| **Heure de dernière mise à jour des données** | Les chiffres affichés sont-ils frais ? | Savoir si on peut se fier au dashboard ou si la chaîne de données est en retard (Airflow arrêté…) avant de décider quoi que ce soit |
+| **Liste des clients avec leur segment** | Qui sont nos clients, et dans quel groupe ? | Cibler une action marketing par segment : réactiver les endormis, rattraper les insatisfaits, récompenser les fidèles |
+
+À reprendre à la journée 4 : pour chaque élément, le délai de mise à jour d'Airflow (quelques minutes) est-il acceptable, ou faut-il du temps réel ?
+
+### Statut « en cours de traitement »
+
+La boutique n'écrit pas dans les tables d'analyse : à la commande, elle enregistre seulement une ligne dans `boutique.orders` (statut `processing`) et publie le CSV. La page « Mon compte » fait une **jointure à gauche** avec `silver.commandes` sur `order_id` :
+- la commande n'est **pas encore** dans `silver.commandes` → le CSV n'a pas été chargé par Airflow → on affiche le statut de la boutique, `processing`, traduit en **« en cours de traitement »** ;
+- dès qu'Airflow l'a chargée → on affiche le **vrai statut** venant des tables nettoyées (`COALESCE(s.order_status, o.status)`).
+
+Aucune synchronisation à écrire : c'est la présence de la commande dans silver qui fait foi. Les statuts sont traduits en français par le filtre Jinja `statut` (`main.py`).
+
 ### Tests et trafic
 
 - `pytest tests/test_boutique_securite.py` couvre le hachage, la validation d'inscription, la protection CSRF, la séparation admin/client et le CSV.
-- `src/robot_clients.py` s'inscrit, se déconnecte, se reconnecte et commande par HTTP ; il récupère les distributions de villes, catégories et paiements depuis les tables nettoyées. Les anomalies incluent ville inconnue, quantité rejetée et panier abandonné.
+- `src/robot_clients.py` (lancer depuis jupyter avec `--base-url http://boutique:8000`) s'inscrit, se déconnecte, se reconnecte et commande par HTTP ; il récupère les distributions de villes, catégories et paiements depuis les tables nettoyées. Les anomalies incluent ville inconnue, quantité rejetée et panier abandonné.
 - Le dashboard lit `gold.commandes`. `src/chargement.py` met à jour `gold.etat_donnees.updated_at` à la fin du chargement gold ; c'est l'heure affichée par l'administrateur.
+- Premier lancement (3 clients, 10 commandes/min, 1 min, 20 % d'anomalies) : **8 commandes, 1 quantité rejetée, 1 panier abandonné**, 8 CSV dans `donnees/entrantes/`. Il a d'abord révélé deux bugs, corrigés : les e-mails en `@example.test` refusés par la validation (domaine réservé), et un `import os` manquant qui faisait échouer toute commande au moment de publier le CSV.

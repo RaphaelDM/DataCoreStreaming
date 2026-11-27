@@ -27,7 +27,20 @@ def format_montant(value):
     return f"{Decimal(str(value)):,.2f} R$".replace(",", " ")
 
 
+STATUTS = {
+    "processing": "en cours de traitement",   # CSV pas encore chargé par Airflow
+    "created": "créée",
+    "approved": "approuvée",
+    "invoiced": "facturée",
+    "shipped": "expédiée",
+    "delivered": "livrée",
+    "canceled": "annulée",
+    "unavailable": "indisponible",
+}
+
+
 templates.env.filters["money"] = format_montant
+templates.env.filters["statut"] = lambda value: STATUTS.get(value, value)
 
 
 @asynccontextmanager
