@@ -30,6 +30,12 @@ def preparer_commande(order_id: str, account: dict, items: list[dict], payment_t
     filename = f"commande_{created_utc:%Y%m%dT%H%M%SZ}_{order_id}.csv"
     directory = Path(config.DONNEES_ENTRANTES)
     directory.mkdir(parents=True, exist_ok=True)
+    # Airflow (utilisateur « airflow », groupe root) doit pouvoir retirer les fichiers
+    # traités de ce dossier : on donne l'écriture au groupe (rwxrwxr-x).
+    try:
+        directory.chmod(0o775)
+    except PermissionError:
+        pass   # dossier créé par un autre utilisateur : ses droits restent inchangés
     final_path = directory / filename
     temporary_path = directory / f".{filename}.{uuid.uuid4().hex}.tmp"
     with temporary_path.open("w", newline="", encoding="utf-8") as file:

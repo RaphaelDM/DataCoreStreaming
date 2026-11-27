@@ -599,3 +599,38 @@ Aucune synchronisation à écrire : c'est la présence de la commande dans silve
 | tâches dynamiques (`expand`) | une même tâche lancée autant de fois qu'il y a d'éléments (ex. une par fichier) |
 
 **Vérification** : le DAG `dags/olist_verification.py` (lancement manuel) contrôle en parallèle la connexion à la base (99 441 commandes, 94 983 segments), l'import de notre code et le chargement du modèle (k = 4) et l'accès à `donnees/entrantes/`, puis écrit un compte rendu. Les 4 tâches passent au vert.
+
+### Étape 2 : le DAG d'ingestion `olist_ingestion_commandes`
+
+Code : `dags/olist_ingestion_commandes.py` (l'orchestration) et `src/ingestion.py` (la logique, testée par `tests/test_ingestion.py`, 11 tests). Toutes les 2 minutes, sans rattrapage (`catchup=False`), une exécution à la fois (`max_active_runs=1`).
+
+```
+lister_fichiers ──► traiter_fichier ×N (une tâche par fichier, .expand) ──► compte_rendu
+```
+
+**Pour chaque fichier** : lecture → vérification des colonnes (et une seule commande par fichier) → découpage du CSV à plat en `clients`, `commandes`, `articles`, `paiements` (client, commande et paiement sont répétés sur chaque ligne d'article : une seule ligne gardée, le paiement n'est **pas** additionné) → **nettoyage avec les fonctions de `nettoyage.py`**, les mêmes que pour l'historique, aucune règle réécrite → contrôle « montant payé = total des articles » (à 0,01 R$ près) → chargement dans silver → rangement du fichier.
+
+| Exigence | Comment |
+|---|---|
+| Atomicité | les 4 tables sont chargées dans **une seule transaction** ; une seule ligne rejetée par le nettoyage rejette tout le fichier |
+| Idempotence | `INSERT … ON CONFLICT DO NOTHING` sur les clés primaires ; un fichier rechargé insère 0 ligne |
+| Fichier valide | `donnees/traitees/AAAA-MM-JJ/` |
+| Fichier invalide | `donnees/rejetees/` + un `.txt` avec la raison (ex. « clients : État inconnu ») |
+| Panne passagère (base injoignable…) | la tâche échoue, le fichier **reste** dans `entrantes/` et repart au passage suivant |
+| Compte rendu | fichiers traités / rejetés / en erreur, lignes chargées, durée : dans les logs et dans `public.journal_ingestion` |
+
+**Statut** : la boutique écrit `processing` ; une fois chargée, la commande passe à `approved` (le paiement est validé à l'achat, `order_approved_at` est renseigné). L'historique du client passe donc de « en cours de traitement » à « approuvée » (`COALESCE(silver.commandes.order_status, boutique.orders.status)`, partie 11).
+
+**Mesures**
+- 30 commandes du robot en attente : 30 fichiers traités en environ 28 s (tâches en parallèle), 77 articles chargés.
+- Relance sur les mêmes 30 fichiers : 30 traités, **0 ligne chargée**, aucun doublon.
+- Test avec anomalies (passage automatique de 11 h 52) : 6 traités (5 commandes du robot + la copie d'un fichier déjà traité, 0 doublon), 2 rejetés avec leur raison (État `XX` ; colonne `payment_value` absente).
+
+**Problème rencontré** : au premier passage, Airflow chargeait bien la commande mais ne pouvait pas retirer le fichier d'`entrantes/` (`PermissionError`) : le dossier avait été créé par la boutique (utilisateur root, droits `rwxr-xr-x`) et Airflow tourne avec l'utilisateur `airflow` (groupe root). La boutique crée maintenant le dossier en `rwxrwxr-x`. Le fichier avait été copié dans `traitees/` avant l'échec : grâce à l'idempotence, le repasser n'a créé aucun doublon.
+
+**Questions du sujet**
+- *Airflow arrêté une heure ?* La boutique continue (elle n'écrit que des fichiers) : environ 600 fichiers s'accumulent à 10 commandes/min, et les clients voient « en cours de traitement » plus longtemps. Au redémarrage, pas de rattrapage de 30 exécutions (`catchup=False`) : le premier passage reprend tout ce qui attend (500 fichiers maximum par passage, le reste au suivant). Rien n'est perdu. Le DAG de qualité (étape 5) le signalera : fichiers en attente depuis plus de 10 minutes.
+- *Deux exécutions en même temps ?* Empêché par `max_active_runs=1`. Si cela arrivait, les deux verraient les mêmes fichiers : la base resterait juste (`ON CONFLICT`), mais le second déplacement échouerait (fichier déjà parti) et la tâche apparaîtrait en erreur sans conséquence sur les données.
+- *50 000 fichiers ?* Une tâche par fichier ne passe pas à l'échelle : Airflow limite le nombre de tâches dynamiques (1 024 par défaut) et chaque tâche coûte environ une seconde de démarrage. D'où la limite de 500 fichiers par passage : 50 000 fichiers = 100 passages = environ 3 h 20. Pour ce volume, il faudrait traiter les fichiers **par paquets** (une tâche pour 100 fichiers) ou, mieux, ne plus passer par des fichiers : c'est le rôle de Kafka à la journée 4.
+
+**Attention** : `src/chargement.py` recrée le schéma silver depuis les fichiers parquet de l'historique (`DROP SCHEMA silver CASCADE`). Le relancer **efface les commandes de la boutique** déjà ingérées. Pour les retrouver, il faudrait recopier les fichiers de `donnees/traitees/` dans `entrantes/` (l'idempotence le permet).
