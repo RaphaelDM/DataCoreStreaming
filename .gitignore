@@ -47,3 +47,5 @@ donnees/bronze/
 donnees/silver/
 donnees/gold/
 donnees/entrantes/
+donnees/traitees/
+donnees/rejetees/
