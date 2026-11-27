@@ -1,0 +1,71 @@
+{
+  "version": "v1",
+  "date_entrainement": "2026-11-27T10:26:08.354031+00:00",
+  "k": 4,
+  "silhouette": 0.2475,
+  "variables": [
+    "nb_commandes",
+    "montant_total",
+    "delai_livraison_moyen_jours",
+    "recence_jours",
+    "note_moyenne"
+  ],
+  "variables_log": [
+    "nb_commandes",
+    "montant_total",
+    "delai_livraison_moyen_jours"
+  ],
+  "noms": {
+    "0": "endormis",
+    "1": "récents",
+    "2": "insatisfaits",
+    "3": "fidèles"
+  },
+  "scores": [
+    {
+      "k": 2,
+      "inertie": 390158.6143,
+      "silhouette": 0.3262
+    },
+    {
+      "k": 3,
+      "inertie": 300674.0779,
+      "silhouette": 0.315
+    },
+    {
+      "k": 4,
+      "inertie": 241926.0554,
+      "silhouette": 0.2475
+    },
+    {
+      "k": 5,
+      "inertie": 205472.8084,
+      "silhouette": 0.2432
+    },
+    {
+      "k": 6,
+      "inertie": 184527.2408,
+      "silhouette": 0.233
+    },
+    {
+      "k": 7,
+      "inertie": 171489.1493,
+      "silhouette": 0.2279
+    },
+    {
+      "k": 8,
+      "inertie": 159221.2089,
+      "silhouette": 0.2276
+    },
+    {
+      "k": 9,
+      "inertie": 150174.7212,
+      "silhouette": 0.2178
+    },
+    {
+      "k": 10,
+      "inertie": 142326.5163,
+      "silhouette": 0.2132
+    }
+  ]
+}

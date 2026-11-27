@@ -462,40 +462,71 @@ Contrôles (dans le pipeline et les tests) : une ligne par personne, et le total
 
 ## 9. Étape 7 : le clustering
 
-**Variables retenues (6)** : récence, fréquence, montant total, panier moyen, note moyenne, délai de livraison.
+Code : `src/clustering.py` (lancer `docker compose exec jupyter python src/clustering.py`), tests : `tests/test_clustering.py`.
 
-**Transformations**
-- imputation par la **médiane** (note et délai manquants) ;
-- `log1p` sur fréquence, montant, panier et délai (queues très asymétriques) ;
+**À quoi ça sert** : regrouper les 94 983 personnes en quelques profils qui se ressemblent, pour que le marketing traite chaque groupe différemment (relancer les endormis, chouchouter les fidèles, rattraper les insatisfaits). Le segment s'affiche dans la liste des clients de l'admin, et Airflow l'attribuera aux nouveaux clients de la boutique.
+
+**Variables retenues (5)** : récence, fréquence (`nb_commandes`), montant total, note moyenne, délai de livraison.
+- `panier_moyen` n'est **pas** retenu : 97 % des personnes n'ont qu'une commande, il est donc presque égal à `montant_total` et doublerait le poids du montant dans les distances.
+
+**Transformations** (un seul `Pipeline` scikit-learn, enregistré avec le modèle)
+- imputation par la **médiane** (684 notes et 2 944 délais manquants) ;
+- `log1p` sur fréquence, montant et délai (queues très asymétriques) ;
 - standardisation (`StandardScaler`), indispensable car KMeans utilise des distances.
 
-**Choix de k**
-- KMeans pour k = 2 à 10 ; courbe du coude (inertie) et score de silhouette sur un **échantillon fixe** (même échantillon pour tous les k, sinon les scores ne sont pas comparables).
-- `choisir_k` prend la meilleure silhouette **entre 4 et 8** : en dessous de 4, la segmentation est trop pauvre pour le marketing.
-- k retenu : `À REMPLIR` (silhouette : `À REMPLIR`).
+**Choix de k** : KMeans pour k = 2 à 10 ; silhouette calculée sur un **échantillon fixe** de 10 000 personnes (le même pour tous les k).
 
-**À discuter** : environ 97 % des clients Olist n'ont acheté qu'une fois. La fréquence discrimine donc peu et le segment « fidèles » sera petit : c'est un **résultat**, pas un bug.
+| k | inertie | silhouette |
+|---|---|---|
+| 2 | 390 159 | 0,326 |
+| 3 | 300 674 | 0,315 |
+| **4** | **241 926** | **0,248** |
+| 5 | 205 473 | 0,243 |
+| 6 | 184 527 | 0,233 |
+| 7 | 171 489 | 0,228 |
+| 8 | 159 221 | 0,228 |
+| 9 | 150 175 | 0,218 |
+| 10 | 142 327 | 0,213 |
 
-**Noms des segments** : `nommer_segments` propose des noms par règles sur les moyennes (fidèles, gros dépensiers, insatisfaits, endormis, nouveaux, occasionnels). Ils sont **à relire** sur les vrais profils et à renommer si besoin : l'heuristique ne remplace pas la lecture. Tableau des profils (moyenne de chaque indicateur par segment) : `À REMPLIR`.
+**k retenu : 4** (silhouette 0,248). La silhouette est meilleure à 2 ou 3, mais 2-3 groupes sont trop pauvres pour le marketing : on prend la meilleure entre 4 et 8. La courbe d'inertie s'infléchit aussi vers 4-5. Une silhouette autour de 0,25 indique des groupes qui se chevauchent : normal pour des clients qui ont presque tous acheté une seule fois.
+
+**Profils** (moyennes réelles par segment)
+
+| Segment | Personnes | Part | Commandes | Montant (R$) | Délai livraison (j) | Récence (j) | Note |
+|---|---|---|---|---|---|---|---|
+| **récents** | 38 586 | 40,6 % | 1,00 | 142,86 | 8,3 | 123 | 4,66 |
+| **endormis** | 37 602 | 39,6 % | 1,00 | 166,84 | 13,7 | 368 | 4,62 |
+| **insatisfaits** | 15 908 | 16,7 % | 1,00 | 192,32 | 20,9 | 238 | 1,60 |
+| **fidèles** | 2 887 | 3,0 % | 2,11 | 308,35 | 12,4 | 226 | 4,16 |
+
+- **récents** : ont acheté il y a environ 4 mois, livrés vite, contents → à faire revenir pendant qu'ils se souviennent de la boutique.
+- **endormis** : contents mais plus d'achat depuis environ un an → campagne de réactivation.
+- **insatisfaits** : note de 1,6 et livraisons **2,5 fois plus longues** que les récents (21 j contre 8 j) → l'insatisfaction vient surtout de la logistique : décision côté transporteurs/vendeurs, pas seulement côté marketing.
+- **fidèles** : les seuls à avoir commandé plusieurs fois, panier double → programme de fidélité. Petit groupe (3 %), comme prévu à l'étape 6 : c'est un **résultat**, pas un bug.
+
+Les noms sont proposés par `nommer_segments` (trait le plus éloigné de la moyenne dans l'espace standardisé), puis relus sur ce tableau.
+
+1 113 personnes de `dim_client` n'ont pas de segment : elles n'ont jamais fait de vrai achat (absentes d'`indicateurs_clients`, voir partie 8).
 
 **Enregistrement**
-- `modeles/standardisation_v1.joblib`, `modeles/kmeans_v1.joblib`, `modeles/segments_v1.json` ;
-- table `segments_clients` (client, segment, version du modèle, date), qui alimente aussi `dim_client.segment` (SCD 2).
+- `modeles/standardisation_v1.joblib`, `modeles/kmeans_v1.joblib`, `modeles/segments_v1.json` (k, silhouette, noms, scores de tous les k, date) ;
+- table `gold.segments_clients` (personne, numéro et nom du segment, version du modèle, date) ;
+- `gold.dim_client.segment` en **SCD 2** : la première attribution complète la ligne courante ; un changement de segment ferme la ligne (`date_fin`, `est_courant = false`) et en ouvre une nouvelle. Les ventes passées restent ainsi attachées au segment qu'avait le client au moment de l'achat.
+- relancer l'attribution avec le même modèle ne change rien (vérifié : 0 ligne modifiée).
 
 **Préparation pour Airflow (demi-journée 3)**
-- `attribuer_segments(df, version)` : `predict` sans réentraîner ;
-- `calculer_indicateurs(engine, uids=[…])` : recalcule seulement les clients touchés ;
-- les fonctions `enregistrer_*` sont des **upserts** (idempotents).
+- `charger_modele("v1")` puis `attribuer_segments(df, prep, kmeans, noms)` : `predict` sans réentraîner ;
+- `lire_indicateurs(conn, uids=[…])` : lit seulement les clients touchés ;
+- `enregistrer_segments` est un **upsert** (idempotent).
 
 ## 10. Ce qu'il reste à faire et mes doutes
 
 - **Lancer le chargement sur les vraies données** : `docker compose exec jupyter python src/chargement.py`, puis noter dans la partie 7 le CA de `fait_ventes` (attendu : 13 591 643,70 R$), le nombre de lignes (112 650) et le nombre de personnes dans `dim_client` (96 096) ; `gold.indicateurs_clients` doit avoir 94 983 lignes (personnes avec au moins un vrai achat).
 - **Schéma SQL à valider sur les vraies données** : les `CHECK` et les FK sont stricts. Si un `COPY` échoue, c'est qu'une règle de `nettoyage.py` laisse passer une ligne que le schéma refuse : corriger la règle, pas le schéma.
 - **Noms de colonnes de silver** : `schema.sql` suppose les noms du notebook (`geolocation_lat`, `geolocation_lng`…). `chargement.py` s'arrête avec la liste des colonnes manquantes s'il y a un écart.
-- **Étape 7 à exécuter** sur `gold.indicateurs_clients` : remplir `k`, la silhouette et le tableau des profils (marqués `À REMPLIR`).
 - **Mois incomplets** (fin 2016, septembre–octobre 2018) : à exclure des graphiques mensuels du dashboard (`dim_date.mois_complet`).
 - **`donnees/olist` est commité** (125 Mo) alors qu'il devrait être dans le `.gitignore`.
-- **Image Jupyter** : `pytest` et `pyarrow` ont été ajoutés au `Dockerfile`. Il faut reconstruire l'image (`docker compose build jupyter`) ; ajouter aussi `psycopg2-binary` s'il n'y est pas.
+- **Image Jupyter** : `pytest`, `pyarrow`, `scikit-learn` et `joblib` ont été ajoutés au `Dockerfile`. Il faut reconstruire l'image (`docker compose build jupyter`) ; ajouter aussi `psycopg2-binary` s'il n'y est pas.
 
 ## 11. Boutique en ligne (jours 2 à 5)
 

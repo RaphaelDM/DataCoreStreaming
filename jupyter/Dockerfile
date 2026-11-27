@@ -8,7 +8,9 @@ RUN pip install --no-cache-dir \
     matplotlib \
     seaborn \
     pytest \
-    pyarrow
+    pyarrow \
+    scikit-learn \
+    joblib
 
 WORKDIR /workspace
 EXPOSE 8888
