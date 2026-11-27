@@ -19,7 +19,14 @@ from boutique.orders import montant, preparer_commande
 from boutique.security import csrf_token, hash_password, verify_csrf, verify_password
 
 templates = Jinja2Templates(directory=str(Path(__file__).with_name("templates")))
-templates.env.filters["money"] = lambda value: f"{Decimal(str(value)):,.2f} R$".replace(",", " ")
+def format_montant(value):
+    # Une commande annulée sans article n'a pas de montant (NULL en base).
+    if value is None:
+        return "—"
+    return f"{Decimal(str(value)):,.2f} R$".replace(",", " ")
+
+
+templates.env.filters["money"] = format_montant
 
 
 @asynccontextmanager
