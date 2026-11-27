@@ -44,7 +44,7 @@ def register_client(base_url: str, index: int, locations: list[dict],
     )
     if unknown_city:
         city = "ville inconnue"
-    email = f"robot-{index}-{''.join(random.choices(string.ascii_lowercase, k=8))}@example.test"
+    email = f"robot-{index}-{''.join(random.choices(string.ascii_lowercase, k=8))}@example.com"
     password = f"Robot-{index}-{''.join(random.choices(string.ascii_letters + string.digits, k=16))}"
     response = session.post(
         f"{base_url}/inscription",
